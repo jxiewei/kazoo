@@ -436,7 +436,7 @@ should_create_endpoint([Routine|Routines], Endpoint, Properties, Call) when is_f
 maybe_owner_called_self(Endpoint, Properties, Call) ->
     CanCallSelf = wh_json:is_true(<<"can_call_self">>, Properties),
     EndpointOwnerId = wh_json:get_value(<<"owner_id">>, Endpoint),
-    OwnerId = whapps_call:kvs_fetch(owner_id, Call),
+    OwnerId = whapps_call:kvs_fetch('owner_id', Call),
     case CanCallSelf
         orelse (not is_binary(OwnerId))
         orelse (not is_binary(EndpointOwnerId))
@@ -820,7 +820,9 @@ create_mobile_endpoint(Endpoint, Properties, Call) ->
             Error;
         Route ->
             Prop = [{<<"Invite-Format">>, <<"route">>}
+                    ,{<<"Ignore-Early-Media">>, <<"true">>}
                     ,{<<"Route">>, Route}
+                    ,{<<"Ignore-Early-Media">>, <<"true">>}
                     ,{<<"Endpoint-Timeout">>, get_timeout(Properties)}
                     ,{<<"Endpoint-Delay">>, get_delay(Properties)}
                     ,{<<"Presence-ID">>, cf_attributes:presence_id(Endpoint, Call)}

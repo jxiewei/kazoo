@@ -34,6 +34,7 @@
          ,all/1
          ,succeeded/1
          ,failed/1
+         ,matches/2
         ]).
 
 -include("crossbar.hrl").
@@ -91,13 +92,24 @@ any(Res) when is_list(Res) ->
 all(Res) when is_list(Res) ->
     kazoo_bindings:all(Res, fun check_bool/1).
 
+-spec succeeded(map_results()) -> map_results().
+succeeded(Res) when is_list(Res) ->
+    kazoo_bindings:succeeded(Res, fun filter_out_failed/1).
+
 -spec failed(map_results()) -> map_results().
 failed(Res) when is_list(Res) ->
     kazoo_bindings:failed(Res, fun filter_out_succeeded/1).
 
--spec succeeded(map_results()) -> map_results().
-succeeded(Res) when is_list(Res) ->
-    kazoo_bindings:succeeded(Res, fun filter_out_failed/1).
+-spec matches(ne_binaries(), ne_binaries()) -> boolean().
+matches([], _) -> 'false';
+matches([R|Restrictions], Tokens) ->
+    Restriction = [cowboy_http:urldecode(T) || T <- binary:split(R, <<"/">>, ['global', 'trim'])],
+    case kazoo_bindings:matches(Restriction, Tokens) of
+        'true' -> 'true';
+        'false' -> matches(Restrictions, Tokens)
+    end.
+
+
 
 %%-------------------------------------------------------------------------
 %% @doc
@@ -148,7 +160,8 @@ bind(Binding, Module, Fun) when is_binary(Binding) ->
     kazoo_bindings:bind(Binding, Module, Fun).
 
 -spec flush() -> 'ok'.
-flush() -> kazoo_bindings:flush().
+flush() ->
+    [kazoo_bindings:flush_mod(Mod) || Mod <- modules_loaded()].
 
 -spec flush(ne_binary()) -> 'ok'.
 flush(Binding) -> kazoo_bindings:flush(Binding).
@@ -157,7 +170,16 @@ flush(Binding) -> kazoo_bindings:flush(Binding).
 flush_mod(CBMod) -> kazoo_bindings:flush_mod(CBMod).
 
 -spec modules_loaded() -> atoms().
-modules_loaded() -> kazoo_bindings:modules_loaded().
+modules_loaded() ->
+    lists:usort(
+      [Mod || Mod <- kazoo_bindings:modules_loaded(),
+              is_cb_module(Mod)
+      ]).
+
+is_cb_module(<<"cb_", _/binary>>) -> 'true';
+is_cb_module(<<"crossbar_", _binary>>) -> 'true';
+is_cb_module(<<_/binary>>) -> 'false';
+is_cb_module(Mod) -> is_cb_module(wh_util:to_binary(Mod)).
 
 -spec init() -> 'ok'.
 init() ->

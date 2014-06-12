@@ -113,12 +113,12 @@ mwi_update(JObj, Props) ->
     'true' = wapi_notifications:mwi_update_v(JObj),
     Username = wh_json:get_value(<<"Notify-User">>, JObj),
     Realm = wh_json:get_value(<<"Notify-Realm">>, JObj),
-    case ecallmgr_registrar:lookup_original_contact(Realm, Username) of
+    case ecallmgr_registrar:lookup_registration(Realm, Username) of
         {'error', 'not_found'} ->
-            lager:warning("failed to find contact for ~s@~s, dropping MWI update", [Username, Realm]);
-        {'ok', Contact} ->
+            lager:warning("failed to find registration for ~s@~s, dropping MWI update", [Username, Realm]);
+        {'ok', Registration} ->
             Node = props:get_value('node', Props),
-            send_mwi_update(JObj, Node, Username, Realm, Contact)
+            send_mwi_update(JObj, Node, Username, Realm, Registration)
     end.
 
 -spec register_overwrite(wh_json:object(), wh_proplist()) -> no_return().
@@ -159,8 +159,8 @@ register_overwrite(JObj, Props) ->
                   ,Node
                  ]).
 
--spec send_mwi_update(wh_json:object(), atom(), ne_binary(), ne_binary(), ne_binary()) -> 'ok'.
-send_mwi_update(JObj, Node, Username, Realm, Contact) ->
+-spec send_mwi_update(wh_json:object(), atom(), ne_binary(), ne_binary(), wh_json:object()) -> 'ok'.
+send_mwi_update(JObj, Node, Username, Realm, Registration) ->
     NewMessages = wh_json:get_integer_value(<<"Messages-New">>, JObj, 0),
     Body = io_lib:format(?MWI_BODY, [<<Username/binary, "@", Realm/binary>>
                                      ,case NewMessages of 0 -> "no"; _ -> "yes" end
@@ -169,10 +169,19 @@ send_mwi_update(JObj, Node, Username, Realm, Contact) ->
                                      ,wh_json:get_integer_value(<<"Messages-Urgent">>, JObj, 0)
                                      ,wh_json:get_integer_value(<<"Messages-Urgent-Saved">>, JObj, 0)
                                     ]),
+
+    Contact = wh_json:get_value(<<"Contact">>, Registration),
+    To = list_to_binary([<<"sip:">>, wh_json:get_value(<<"To-User">>, Registration)
+                         ,<<"@">>, wh_json:get_value(<<"To-Host">>, Registration)
+                        ]),
+    From = list_to_binary([<<"sip:">>, wh_json:get_value(<<"From-User">>, Registration)
+                         ,<<"@">>, wh_json:get_value(<<"From-Host">>, Registration)
+                        ]),
+
     Headers = [{"profile", ?DEFAULT_FS_PROFILE}
                ,{"contact", Contact}
-               ,{"to-uri", <<"sip:", Username/binary, "@", Realm/binary>>}
-               ,{"from-uri", <<"sip:", Username/binary, "@", Realm/binary>>}
+               ,{"to-uri", To}
+               ,{"from-uri", From}
                ,{"event-str", "message-summary"}
                ,{"content-type", "application/simple-message-summary"}
                ,{"content-length", wh_util:to_list(length(Body))}
@@ -501,13 +510,12 @@ publish_presence_event(EventName, Props, Node) ->
            ,{<<"Dialog-State">>, props:get_value(<<"dialog_state">>, Props)}
            | wh_api:default_headers(<<>>, <<"notification">>, wh_util:to_lower_binary(EventName), ?APP_NAME, ?APP_VERSION)
           ],
-    wh_amqp_worker:cast(?ECALLMGR_AMQP_POOL
-                        ,Req
+    wh_amqp_worker:cast(Req
                         ,fun wapi_notifications:publish_presence_probe/1
                        ).
 
 -spec relay_presence(atom(), ne_binary(), wh_proplist(), atom(), api_binary()) -> [fs_sendevent_ret(),...].
-relay_presence(EventName, PresenceId, Props, Node, undefined) ->
+relay_presence(EventName, PresenceId, Props, Node, 'undefined') ->
     Match = #sip_subscription{to=PresenceId
                               ,node='$1'
                               ,_ = '_'
@@ -555,8 +563,7 @@ handle_message_query(Data, Node) ->
                      ,{<<"Message-Account">>, props:get_value(<<"Message-Account">>, Data)}
                      | wh_api:default_headers(?APP_NAME, ?APP_VERSION)
                     ],
-            _ = wh_amqp_worker:cast(?ECALLMGR_AMQP_POOL
-                                    ,Query
+            _ = wh_amqp_worker:cast(Query
                                     ,fun wapi_notifications:publish_mwi_query/1
                                    ),
             'ok';

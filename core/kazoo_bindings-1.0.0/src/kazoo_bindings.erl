@@ -39,6 +39,7 @@
          ,all/2
          ,succeeded/2
          ,failed/2
+         ,matches/2
         ]).
 
 %% ETS Persistence
@@ -174,6 +175,61 @@ succeeded(Res, F) when is_list(Res),
                        is_function(F, 1)
                        ->
     [R || R <- Res, F(R)].
+
+%%--------------------------------------------------------------------
+%% @public
+%% @doc
+%% @end
+%%
+%% <<"#.6.*.1.4.*">>,<<"6.a.a.6.a.1.4.a">>
+%%
+%%--------------------------------------------------------------------
+-spec matches(ne_binaries(), ne_binaries()) -> boolean().
+
+%% if both are empty, we made it!
+matches([], []) -> 'true';
+matches([<<"#">>], []) -> 'true';
+
+matches([<<"#">>, <<"*">>], []) -> 'false';
+matches([<<"#">>, <<"*">>], [<<>>]) -> 'false';
+matches([<<"#">>, <<"*">>], [_]) -> 'true'; % match one item:  #.* matches foo
+
+matches([<<"#">> | Bs], []) -> % sadly, #.# would match foo, foo.bar, foo.bar.baz, etc
+    matches(Bs, []);           % so keep checking by stipping of the first #
+
+%% if one runs out without a wildcard, no matchy
+matches([], [_|_]) -> 'false'; % foo.*   foo
+matches([_|_], []) -> 'false';
+matches([_|_], [<<>>]) -> 'false';
+
+%% * matches one segment only
+matches([<<"*">> | Bs], [_|Rs]) ->
+    matches(Bs, Rs); % so ignore what the routing segment is and continue
+
+%% # can match 0 or more segments
+matches([<<"#">>, B | Bs], [B | Rs]) ->
+    %% Since the segment in B could be repeated later in the Routing Key, we need to bifurcate here
+    %% but we'll short circuit if this was indeed the end of the # matching
+    %% see binding_matches(<<"#.A.*">>,<<"A.a.A.a">>)
+
+    case lists:member(B, Rs) of
+        'true' ->
+            matches(Bs, Rs) orelse matches([<<"#">> | Bs], Rs);
+        'false' ->
+            matches(Bs, Rs)
+    end;
+
+matches([<<"#">>, <<"*">> | _]=Bs, [_ | Rs]) ->
+    matches(Bs, Rs);
+
+matches([<<"#">> | _]=Bs, [_ | Rs]) ->
+    matches(Bs, Rs); % otherwise leave the # in to continue matching
+
+%% if the segments match, continue
+matches([B | Bs], [B | Rs]) ->
+    matches(Bs, Rs);
+%% otherwise no match
+matches(_, _) -> 'false'.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -416,8 +472,14 @@ flush_mod(ClientMod, #kz_binding{binding=Binding
     case queue:len(Filtered) =:= queue:len(Responders) of
         'true' -> 'false'; %% nothing to update
         'false' ->
-            lager:debug("removing mod ~s from ~s", [ClientMod, Binding]),
-            ets:update_element(table_id(), Binding, {3, Filtered})
+            case queue:len(Filtered) of
+                0 ->
+                    lager:debug("no more responders, removing ~s", [Binding]),
+                    ets:delete(table_id(), Binding);
+                _Len ->
+                    lager:debug("removing mod ~s from ~s", [ClientMod, Binding]),
+                    ets:update_element(table_id(), Binding, {#kz_binding.binding_responders, Filtered})
+            end
     end.
 
 -type filter_updates() :: [{ne_binary(), {pos_integer(), queue()}}] | [].
@@ -490,61 +552,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% @end
-%%
-%% <<"#.6.*.1.4.*">>,<<"6.a.a.6.a.1.4.a">>
-%%
-%%--------------------------------------------------------------------
--spec matches(ne_binaries(), ne_binaries()) -> boolean().
-
-%% if both are empty, we made it!
-matches([], []) -> 'true';
-matches([<<"#">>], []) -> 'true';
-
-matches([<<"#">>, <<"*">>], []) -> 'false';
-matches([<<"#">>, <<"*">>], [<<>>]) -> 'false';
-matches([<<"#">>, <<"*">>], [_]) -> 'true'; % match one item:  #.* matches foo
-
-matches([<<"#">> | Bs], []) -> % sadly, #.# would match foo, foo.bar, foo.bar.baz, etc
-    matches(Bs, []);           % so keep checking by stipping of the first #
-
-%% if one runs out without a wildcard, no matchy
-matches([], [_|_]) -> 'false'; % foo.*   foo
-matches([_|_], []) -> 'false';
-matches([_|_], [<<>>]) -> 'false';
-
-%% * matches one segment only
-matches([<<"*">> | Bs], [_|Rs]) ->
-    matches(Bs, Rs); % so ignore what the routing segment is and continue
-
-%% # can match 0 or more segments
-matches([<<"#">>, B | Bs], [B | Rs]) ->
-    %% Since the segment in B could be repeated later in the Routing Key, we need to bifurcate here
-    %% but we'll short circuit if this was indeed the end of the # matching
-    %% see binding_matches(<<"#.A.*">>,<<"A.a.A.a">>)
-
-    case lists:member(B, Rs) of
-        'true' ->
-            matches(Bs, Rs) orelse matches([<<"#">> | Bs], Rs);
-        'false' ->
-            matches(Bs, Rs)
-    end;
-
-matches([<<"#">>, <<"*">> | _]=Bs, [_ | Rs]) ->
-    matches(Bs, Rs);
-
-matches([<<"#">> | _]=Bs, [_ | Rs]) ->
-    matches(Bs, Rs); % otherwise leave the # in to continue matching
-
-%% if the segments match, continue
-matches([B | Bs], [B | Rs]) ->
-    matches(Bs, Rs);
-%% otherwise no match
-matches(_, _) -> 'false'.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -637,11 +644,12 @@ log_undefined(M, F, Length, ST) ->
 
 log_function_clause(M, F, Length, [{M, F, _Args, _}|_]) ->
     lager:debug("unable to find function clause for ~s:~s/~b", [M, F, Length]);
-log_function_clause(M, F, Length, [{RealM, RealF, RealArgs, Where}|_]) ->
+log_function_clause(M, F, Length, [{RealM, RealF, RealArgs, Where}|_ST]) ->
     lager:debug("unable to find function clause for ~s:~s(~p) in ~s:~p"
                 ,[RealM, RealF, RealArgs, props:get_value('file', Where), props:get_value('line', Where)]
                ),
-    lager:debug("as part of ~s:~s/~p", [M, F, Length]);
+    lager:debug("as part of ~s:~s/~p", [M, F, Length]),
+    [lager:debug("st: ~p", [ST]) || ST <- _ST];
 log_function_clause(M, F, Lenth, ST) ->
     lager:debug("no matching function clause for ~s:~s/~p", [M, F, Lenth]),
     wh_util:log_stacktrace(ST).

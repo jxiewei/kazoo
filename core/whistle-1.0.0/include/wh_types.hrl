@@ -1,10 +1,12 @@
 -ifndef(WHISTLE_TYPES_INCLUDED).
 -include_lib("xmerl/include/xmerl.hrl").
 
+-define(MILLISECONDS_IN_SECOND, 1000).
 -define(MILLISECONDS_IN_MINUTE, 60000).
 -define(MILLISECONDS_IN_HOUR, 3600000).
 -define(MILLISECONDS_IN_DAY, 86400000).
 
+-define(SECONDS_IN_MINUTE, 60).
 -define(SECONDS_IN_HOUR, 3600).
 -define(SECONDS_IN_DAY, 86400).
 -define(SECONDS_IN_WEEK, 604800).
@@ -67,6 +69,7 @@
 
 -type wh_proplist_value() :: any().
 -type wh_proplist_key() :: binary() | atom() | number() | string().
+-type wh_proplist_keys() :: [wh_proplist_key(),...] | [].
 -type wh_proplist_kv(K, V) :: [{K, V} | atom(),...] | [].
 -type wh_proplist_k(K) :: wh_proplist_kv(K, wh_proplist_value()).
 -type wh_proplist() :: wh_proplist_kv(wh_proplist_key(), wh_proplist_value()).
@@ -116,8 +119,11 @@
 -define(WORKER_ARGS_TYPE(I, Args, Type), {I, {I, 'start_link', Args}, Type, 5000, 'worker', [I]}).
 -define(WORKER_NAME_ARGS(I, N, Args), {N, {I, 'start_link', Args}, 'permanent', 5000, 'worker', [I]}).
 -define(WORKER_NAME_ARGS_TYPE(N, I, Args, Type), {N, {I, 'start_link', Args}, Type, 5000, 'worker', [I]}).
+
 -define(SUPER(I), {I, {I, 'start_link', []}, 'permanent', 'infinity', 'supervisor', [I]}).
--define(SUPER(I, Type), {I, {I, 'start_link', []}, Type, 'infinity', 'supervisor', [I]}).
+-define(SUPER_TYPE(I, Type), {I, {I, 'start_link', []}, Type, 'infinity', 'supervisor', [I]}).
+-define(SUPER_ARGS(I, Args), {I, {I, 'start_link', Args}, 'permanent', 'infinity', 'supervisor', [I]}).
+
 -define(CACHE(N), {N, {'wh_cache', 'start_link', [N]}, 'permanent', 5000, 'worker', ['wh_cache']}).
 -define(CACHE_ARGS(N, Arg), {N, {'wh_cache', 'start_link', [N, Arg]}, 'permanent', 5000, 'worker', ['wh_cache']}).
 

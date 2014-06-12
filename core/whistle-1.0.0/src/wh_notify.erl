@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @copyright (C) 2012-2013, 2600Hz INC
+%%% @copyright (C) 2012-2014, 2600Hz INC
 %%% @doc
 %%%
 %%% @end
@@ -44,7 +44,7 @@ cnam_request(PhoneNumber, Account) ->
               ,{<<"Phone-Number">>, PhoneNumber}
               | wh_api:default_headers(?APP_VERSION, ?APP_NAME)
              ],
-    wapi_notifications:publish_cnam_request(Notify).
+    wh_amqp_worker:cast(Notify, fun wapi_notifications:publish_cnam_request/1).
 
 -spec port_request(wh_json:object()) -> 'ok'.
 -spec port_request(wh_json:object(), wh_json:object()) -> 'ok'.
@@ -66,7 +66,7 @@ port_request(PhoneNumber, Account) ->
               ,{<<"Phone-Number">>, PhoneNumber}
               | wh_api:default_headers(?APP_VERSION, ?APP_NAME)
              ],
-    wapi_notifications:publish_cnam_request(Notify).
+    wh_amqp_worker:cast(Notify, fun wapi_notifications:publish_cnam_request/1).
 
 -spec deregister(wh_json:object()) -> 'ok'.
 -spec deregister(wh_json:object(), wh_json:object()) -> 'ok'.
@@ -96,7 +96,7 @@ deregister(LastReg, Endpoint, Account) ->
               ,{<<"Last-Registration">>, LastReg}
               | wh_api:default_headers(?APP_VERSION, ?APP_NAME)
              ],
-    wapi_notifications:publish_deregister(Notify).
+    wh_amqp_worker:cast(Notify, fun wapi_notifications:publish_deregister/1).
 
 low_balance(_Account, _Credit) ->
     'ok'.
@@ -123,12 +123,13 @@ transaction(Account, Transaction) ->
     transaction(Account, Transaction, 'undefined').
 
 transaction(Account, Transaction, ServicePlan) ->
-    Notify = [{<<"Account-ID">>, wh_util:format_account_id(Account, 'raw')}
-              ,{<<"Transaction">>, Transaction}
-              ,{<<"Service-Plan">>, ServicePlan}
-              | wh_api:default_headers(?APP_VERSION, ?APP_NAME)
-             ],
-    wapi_notifications:publish_transaction(props:filter_undefined(Notify)).
+    Notify = props:filter_undefined(
+               [{<<"Account-ID">>, wh_util:format_account_id(Account, 'raw')}
+                ,{<<"Transaction">>, Transaction}
+                ,{<<"Service-Plan">>, ServicePlan}
+                | wh_api:default_headers(?APP_VERSION, ?APP_NAME)
+               ]),
+    wh_amqp_worker:cast(Notify, fun wapi_notifications:publish_transaction/1).
 
 -spec system_alert(atom() | string() | binary(), [term()]) -> 'ok'.
 -spec system_alert(atom() | string() | binary(), [term()], wh_proplist()) -> 'ok'.
@@ -143,7 +144,7 @@ system_alert(Format, Args, Props) ->
              ,{<<"Details">>, wh_json:from_list(Props)}
              | wh_api:default_headers(?APP_VERSION, ?APP_NAME)
             ],
-    wapi_notifications:publish_system_alert(Notify).
+    wh_amqp_worker:cast(Notify, fun wapi_notifications:publish_system_alert/1).
 
 -spec generic_alert(atom() | string() | binary(), atom() | string() | binary()) -> 'ok'.
 generic_alert(Subject, Msg) ->
@@ -151,4 +152,4 @@ generic_alert(Subject, Msg) ->
              ,{<<"Subject">>, <<"KAZOO: ", (wh_util:to_binary(Subject))/binary>>}
              | wh_api:default_headers(?APP_VERSION, ?APP_NAME)
             ],
-    wapi_notifications:publish_system_alert(Notify).
+    wh_amqp_worker:cast(Notify, fun wapi_notifications:publish_system_alert/1).

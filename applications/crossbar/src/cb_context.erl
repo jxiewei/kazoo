@@ -28,6 +28,8 @@
 
          ,account_id/1, set_account_id/2
          ,account_db/1, set_account_db/2
+         ,account_modb/1, account_modb/2, account_modb/3
+         ,account_realm/1
          ,account_doc/1
          ,auth_token/1, set_auth_token/2
          ,auth_doc/1, set_auth_doc/2
@@ -46,6 +48,7 @@
          ,resp_expires/1, set_resp_expires/2
          ,api_version/1, set_api_version/2
          ,resp_etag/1, set_resp_etag/2
+         ,resp_envelope/1, set_resp_envelope/2
          ,allow_methods/1, set_allow_methods/2
          ,allowed_methods/1, set_allowed_methods/2
          ,method/1, set_method/2
@@ -97,15 +100,34 @@ req_value(#cb_context{req_data=ReqData, query_json=QS}, Key, Default) ->
     wh_json:find(Key, [ReqData, QS], Default).
 
 %% Accessors
+-spec account_id(context()) -> ne_binary().
+-spec account_db(context()) -> ne_binary().
+-spec account_modb(context()) -> ne_binary().
+-spec account_modb(context(), wh_now() | wh_timeout()) -> ne_binary().
+-spec account_modb(context(), wh_year(), wh_month()) -> ne_binary().
+-spec account_realm(context()) -> ne_binary().
 -spec account_doc(context()) -> wh_json:object().
 
 account_id(#cb_context{account_id=AcctId}) -> AcctId.
 account_db(#cb_context{db_name=AcctDb}) -> AcctDb.
-account_doc(#cb_context{}=Context) ->
-    AccountId = account_id(Context),
+
+account_modb(Context) ->
+    wh_util:format_account_mod_id(account_id(Context)).
+account_modb(Context, {_,_,_}=Timestamp) ->
+    wh_util:format_account_mod_id(account_id(Context), Timestamp);
+account_modb(Context, Timestamp) when is_integer(Timestamp), Timestamp > 0 ->
+    wh_util:format_account_mod_id(account_id(Context), Timestamp).
+account_modb(Context, Year, Month) ->
+    wh_util:format_account_mod_id(account_id(Context), Year, Month).
+
+account_realm(Context) ->
+    wh_json:get_value(<<"pvt_realm">>, account_doc(Context)).
+
+account_doc(Context) ->
     {'ok', Doc} =
-        couch_mgr:open_cache_doc(wh_util:format_account_id(AccountId, 'encoded'), AccountId),
+        couch_mgr:open_cache_doc(account_db(Context), account_id(Context)),
     Doc.
+
 auth_token(#cb_context{auth_token=AuthToken}) -> AuthToken.
 auth_doc(#cb_context{auth_doc=AuthDoc}) -> AuthDoc.
 auth_account_id(#cb_context{auth_account_id=AuthBy}) -> AuthBy.
@@ -124,6 +146,7 @@ resp_expires(#cb_context{resp_expires=RespExpires}) -> RespExpires.
 resp_headers(#cb_context{resp_headers=RespHeaders}) -> RespHeaders.
 api_version(#cb_context{api_version=ApiVersion}) -> ApiVersion.
 resp_etag(#cb_context{resp_etag=ETag}) -> ETag.
+resp_envelope(#cb_context{resp_envelope=E}) -> E.
 
 allow_methods(#cb_context{allow_methods=AMs}) -> AMs.
 allowed_methods(#cb_context{allowed_methods=AMs}) -> AMs.
@@ -173,6 +196,7 @@ setters_fold({F, K, V}, C) -> F(C, K, V).
 -spec set_resp_expires(context(), wh_datetime()) -> context().
 -spec set_api_version(context(), ne_binary()) -> context().
 -spec set_resp_etag(context(), api_binary()) -> context().
+-spec set_resp_envelope(context(), wh_json:object()) -> context().
 -spec set_resp_headers(context(), wh_proplist()) -> context().
 -spec add_resp_headers(context(), wh_proplist()) -> context().
 -spec set_resp_header(context(), ne_binary(), ne_binary()) -> context().
@@ -207,6 +231,7 @@ set_resp_status(#cb_context{}=Context, RespStatus) -> Context#cb_context{resp_st
 set_resp_expires(#cb_context{}=Context, RespExpires) -> Context#cb_context{resp_expires=RespExpires}.
 set_api_version(#cb_context{}=Context, ApiVersion) -> Context#cb_context{api_version=ApiVersion}.
 set_resp_etag(#cb_context{}=Context, ETag) -> Context#cb_context{resp_etag=ETag}.
+set_resp_envelope(#cb_context{}=Context, E) -> Context#cb_context{resp_envelope=E}.
 
 set_allow_methods(#cb_context{}=Context, AMs) -> Context#cb_context{allow_methods=AMs}.
 set_allowed_methods(#cb_context{}=Context, AMs) -> Context#cb_context{allowed_methods=AMs}.
@@ -370,32 +395,32 @@ response(#cb_context{resp_error_code=Code
 %% Add a validation error to the list of request errors
 %% @end
 %%--------------------------------------------------------------------
-validate_request_data(Schema, #cb_context{req_data=Data
-                                          ,resp_status=RespStatus
-                                         }=Context) ->
-    case wh_json_validator:is_valid(wh_json:public_fields(Data), Schema) of
-        {'fail', Errors} ->
-            lager:debug("request data did not validate against ~s: ~p", [Schema, Errors]),
-            lists:foldl(fun({Property, Error}, C) ->
-                                [Code, Message] = binary:split(Error, <<":">>),
-                                add_validation_error(Property, Code, Message, C)
-                        end, Context#cb_context{resp_status='error'}, Errors);
-        {'pass', JObj} ->
-            Status = case RespStatus =:= 'error' of
-                         'true' -> 'error';
-                         'false' -> 'success'
-                     end,
-            %% Allow onboarding to set the document ID
-            case wh_json:get_ne_value(<<"_id">>, Data) of
-                'undefined' ->
-                    Context#cb_context{resp_status=Status
-                                       ,doc=JObj
-                                      };
-                Id ->
-                    Context#cb_context{resp_status=Status
-                                       ,doc=wh_json:set_value(<<"_id">>, Id, JObj)
-                                      }
-            end
+-type after_fun() :: fun((context()) -> context()) | 'undefined'.
+
+-spec validate_request_data(ne_binary() | api_object(), context()) ->
+                                   context().
+-spec validate_request_data(ne_binary() | api_object(), context(), after_fun()) ->
+                                   context().
+-spec validate_request_data(ne_binary() | api_object(), context(), after_fun(), after_fun()) ->
+                                   context().
+validate_request_data('undefined', Context) ->
+    passed(Context);
+validate_request_data(<<_/binary>> = Schema, Context) ->
+    case find_schema(Schema) of
+        'undefined' ->
+            passed(set_doc(Context, req_data(Context)));
+        SchemaJObj ->
+            validate_request_data(SchemaJObj, Context)
+    end;
+validate_request_data(SchemaJObj, Context) ->
+    case jesse:validate_with_schema(SchemaJObj, wh_json:public_fields(req_data(Context))) of
+        {'ok', JObj} ->
+            passed(set_doc(Context, JObj));
+        {'error', Errors} ->
+            lager:debug("request data did not validate against ~s: ~p", [wh_json:get_value(<<"_id">>, SchemaJObj)
+                                                                         ,Errors
+                                                                        ]),
+            failed(Context, Errors)
     end.
 
 validate_request_data(Schema, Context, OnSuccess) ->
@@ -408,6 +433,278 @@ validate_request_data(Schema, Context, OnSuccess, OnFailure) ->
         #cb_context{}=C2 when is_function(OnFailure) ->
             OnFailure(C2);
         Else -> Else
+    end.
+
+
+-type validator_error() :: {'data_invalid'
+                            ,wh_json:object()
+                            ,atom()
+                            ,wh_json:json_term()
+                            ,ne_binaries()
+                           }.
+-type validator_errors() :: [validator_error(),...] | [].
+
+-spec failed(context(), validator_errors()) -> context().
+-spec failed_error(validator_error(), context()) -> context().
+failed(Context, Errors) ->
+    lists:foldl(fun failed_error/2, set_resp_status(Context, 'error'), Errors).
+
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'wrong_min_length'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    MinLen = wh_json:get_binary_value(<<"minLength">>, FailedSchemaJObj),
+    add_validation_error(FailedKeyPath
+                         ,<<"minLength">>
+                         ,<<"String must be at least ", MinLen/binary, " characters">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'wrong_max_length'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    MaxLen = wh_json:get_binary_value(<<"maxLength">>, FailedSchemaJObj),
+    add_validation_error(FailedKeyPath
+                         ,<<"maxLength">>
+                         ,<<"String must not be more ", MaxLen/binary, " characters">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,_FailedSchemaJObj
+              ,'not_in_enum'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    add_validation_error(FailedKeyPath
+                         ,<<"enum">>
+                         ,<<"Value not found in enumerated list of values">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'not_minimum'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    Min = wh_util:to_binary(
+            wh_json:get_first_defined([<<"minimum">>, <<"exclusiveMinimum">>], FailedSchemaJObj)
+           ),
+    add_validation_error(FailedKeyPath
+                         ,<<"minimum">>
+                         ,<<"Value must be at least ", Min/binary>>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'not_maximum'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    Max = wh_util:to_binary(
+            wh_json:get_first_defined([<<"maximum">>, <<"exclusiveMaximum">>], FailedSchemaJObj)
+           ),
+    add_validation_error(FailedKeyPath
+                         ,<<"maximum">>
+                         ,<<"Value must be at most ", Max/binary>>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'wrong_min_items'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    Min = wh_json:get_binary_value(<<"minItems">>, FailedSchemaJObj),
+    add_validation_error(FailedKeyPath
+                         ,<<"minItems">>
+                         ,<<"The list is not at least ", Min/binary, " items">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'wrong_max_items'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    Max = wh_json:get_binary_value(<<"maxItems">>, FailedSchemaJObj),
+    add_validation_error(FailedKeyPath
+                         ,<<"maxItems">>
+                         ,<<"The list is more than ", Max/binary, " items">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,_FailedSchemaJObj
+              ,'wrong_min_properties'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    add_validation_error(FailedKeyPath
+                         ,<<"minProperties">>
+                         ,<<"Not enough keys in the object">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,_FailedSchemaJObj
+              ,{'not_unique', _Item}
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    lager:debug("item ~p is not unique", [_Item]),
+    lager:debug("failed schema: ~p", [_FailedSchemaJObj]),
+    add_validation_error(FailedKeyPath
+                         ,<<"uniqueItems">>
+                         ,<<"List of items is not unique">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,_FailedSchemaJObj
+              ,'no_extra_properties_allowed'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    add_validation_error(FailedKeyPath
+                         ,<<"additionalProperties">>
+                         ,<<"Strict checking of data is enabled; only include schema-defined properties">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,_FailedSchemaJObj
+              ,'no_extra_items_allowed'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    add_validation_error(FailedKeyPath
+                         ,<<"additionalItems">>
+                         ,<<"Strict checking of data is enabled; only include schema-defined items">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'no_match'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    Pattern = wh_json:get_value(<<"pattern">>, FailedSchemaJObj),
+    add_validation_error(FailedKeyPath
+                         ,<<"pattern">>
+                         ,<<"Failed to match pattern '", Pattern/binary, "'">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,_FailedSchemaJObj
+              ,'missing_required_property'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    add_validation_error(FailedKeyPath
+                         ,<<"required">>
+                         ,<<"Field is required but missing">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,_FailedSchemaJObj
+              ,'missing_dependency'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    add_validation_error(FailedKeyPath
+                         ,<<"dependencies">>
+                         ,<<"Dependencies were not validated">>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'not_divisible'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    DivBy = wh_json:get_binary_value(<<"divisibleBy">>, FailedSchemaJObj),
+    add_validation_error(FailedKeyPath
+                         ,<<"divisibleBy">>
+                         ,<<"Value not divisible by ", DivBy/binary>>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'not_allowed'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    Disallow = get_disallow(FailedSchemaJObj),
+    add_validation_error(FailedKeyPath
+                         ,<<"disallow">>
+                         ,<<"Value is disallwed by ", Disallow/binary>>
+                         ,Context
+                        );
+failed_error({'data_invalid'
+              ,FailedSchemaJObj
+              ,'wrong_type'
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    Types = get_types(FailedSchemaJObj),
+    add_validation_error(FailedKeyPath
+                         ,<<"type">>
+                         ,<<"Value did not match type(s): ", Types/binary>>
+                         ,Context
+                        );
+
+
+failed_error({'data_invalid'
+              ,_FailedSchemaJObj
+              ,FailMsg
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    lager:debug("failed message: ~p", [FailMsg]),
+    lager:debug("failed schema: ~p", [_FailedSchemaJObj]),
+    lager:debug("failed value: ~p", [_FailedValue]),
+    lager:debug("failed keypath: ~p", [FailedKeyPath]),
+    add_validation_error(FailedKeyPath, wh_util:to_binary(FailMsg), <<"failed to validate">>, Context).
+
+-spec get_disallow(wh_json:object()) -> ne_binary().
+get_disallow(JObj) ->
+    case wh_json:get_value(<<"disallow">>, JObj) of
+        <<_/binary>> = Disallow -> Disallow;
+        Disallows when is_list(Disallows) -> wh_util:join_binary(Disallows)
+    end.
+
+-spec get_types(wh_json:object()) -> ne_binary().
+get_types(JObj) ->
+    case wh_json:get_value(<<"types">>, JObj) of
+        <<_/binary>> = Type -> Type;
+        Types when is_list(Types) -> wh_util:join_binary(Types);
+        _TypeSchema -> <<"type schema">>
+    end.
+
+-spec passed(context()) -> context().
+-spec passed(context(), crossbar_status()) -> context().
+passed(#cb_context{resp_status='error'}=Context) ->
+    passed(Context, 'error');
+passed(Context) ->
+    passed(Context, 'success').
+
+passed(#cb_context{req_data=Data}=Context, Status) ->
+    case wh_json:get_ne_value(<<"_id">>, Data) of
+        'undefined' ->
+            Context#cb_context{resp_status=Status};
+        Id ->
+            Context#cb_context{resp_status=Status
+                               ,doc=wh_json:set_value(<<"_id">>, Id, doc(Context))
+                              }
+    end.
+
+-spec find_schema(ne_binary()) -> api_object().
+find_schema(<<_/binary>> = Schema) ->
+    case couch_mgr:open_cache_doc(?WH_SCHEMA_DB, Schema) of
+        {'ok', SchemaJObj} -> SchemaJObj;
+        {'error', _E} ->
+            lager:debug("failed to find schema ~s: ~p", [Schema, _E]),
+            'undefined'
     end.
 
 %%--------------------------------------------------------------------

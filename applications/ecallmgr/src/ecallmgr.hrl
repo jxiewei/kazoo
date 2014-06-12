@@ -4,8 +4,6 @@
 -include_lib("whistle/include/wh_log.hrl").
 -include_lib("whistle/include/wh_api.hrl").
 
--define(ECALLMGR_AMQP_POOL, 'ecallmgr_amqp_pool').
-
 -define(ECALLMGR_UTIL_CACHE, 'ecallmgr_util_cache').
 -define(ECALLMGR_AUTH_CACHE, 'ecallmgr_auth_cache').
 -define(ECALLMGR_CALL_CACHE, 'ecallmgr_call_cache').
@@ -214,6 +212,8 @@
                                ,{<<"tts_voice">>, <<"tts_voice">>}
                                ,{<<"playback_terminators">>, <<"playback_terminators">>}
                                ,{<<"record_waste_resources">>, <<"record_waste_resources">>}
+                               ,{<<"recording_follow_transfer">>, <<"recording_follow_transfer">>}
+                               ,{<<"recording_follow_attxfer">>, <<"recording_follow_attxfer">>}
                                ,{<<"enable_file_write_buffering">>, <<"enable_file_write_buffering">>}
                                ,{<<"RECORD_APPEND">>, <<"RECORD_APPEND">>}
                                ,{<<"fax_enable_t38_request">>, <<"fax_enable_t38_request">>}
@@ -300,6 +300,8 @@
                            ,'spandsp::rxfaxnegociateresult'
                            ,?CHANNEL_MOVE_RELEASED_EVENT
                            ,?CHANNEL_MOVE_COMPLETE_EVENT
+                           ,'KZ::DELIVERY_REPORT'
+                           ,'KZ::MESSAGE'
                           ]).
 
 -define(FS_DEFAULT_HDRS, [<<"Event-Name">>, <<"Core-UUID">>, <<"FreeSWITCH-Hostname">>, <<"FreeSWITCH-Switchname">>

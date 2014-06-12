@@ -639,18 +639,12 @@ is_authentic(Req0, Context0, _ReqVerb) ->
 get_auth_token(Req0, Context) ->
     case cowboy_req:header(<<"x-auth-token">>, Req0) of
         {'undefined', Req1} ->
-            case wh_json:get_value(<<"auth_token">>, cb_context:req_json(Context)) of
+            case cb_context:req_value(Context, <<"auth_token">>) of
                 'undefined' ->
-                    case wh_json:get_value(<<"auth_token">>, cb_context:query_string(Context)) of
-                        'undefined' ->
-                            lager:debug("no auth token found"),
-                            {Req1, Context};
-                        Token ->
-                            lager:debug("using auth token from query string"),
-                            {Req1, cb_context:set_auth_token(Context, Token)}
-                    end;
+                    lager:debug("no auth token found"),
+                    {Req1, Context};
                 Token ->
-                    lager:debug("using auth token from req json"),
+                    lager:debug("using auth token found"),
                     {Req1, cb_context:set_auth_token(Context, Token)}
             end;
         {Token, Req1} ->
@@ -921,7 +915,7 @@ finish_request(_Req, Context) ->
 -spec create_resp_content(cowboy_req:req(), cb_context:context()) ->
                                  {ne_binary() | iolist(), cowboy_req:req()}.
 create_resp_content(Req0, Context) ->
-    try wh_json:encode(wh_json:from_list(create_resp_envelope(Context))) of
+    try wh_json:encode(create_resp_envelope(Context)) of
         JSON ->
             case cb_context:req_value(Context, <<"jsonp">>) of
                 'undefined' -> {JSON, Req0};
@@ -980,8 +974,8 @@ create_pull_response(Req0, Context) ->
 %% This function extracts the reponse fields and puts them in a proplist
 %% @end
 %%--------------------------------------------------------------------
--spec create_resp_envelope(cb_context:context()) -> wh_proplist().
--spec do_create_resp_envelope(cb_context:context()) -> wh_proplist().
+-spec create_resp_envelope(cb_context:context()) -> wh_json:object().
+-spec do_create_resp_envelope(cb_context:context()) -> wh_json:object().
 create_resp_envelope(Context) ->
     do_create_resp_envelope(cb_context:import_errors(Context)).
 
@@ -1004,7 +998,11 @@ do_create_resp_envelope(Context) ->
                     ,{<<"data">>, RespData}
                    ]
            end,
-    props:filter_undefined(Resp).
+
+    wh_json:set_values(
+      props:filter_undefined(Resp)
+      ,cb_context:resp_envelope(Context)
+     ).
 
 %%--------------------------------------------------------------------
 %% @private

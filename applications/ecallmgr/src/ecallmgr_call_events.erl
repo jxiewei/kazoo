@@ -326,7 +326,32 @@ handle_info({'event', [CallId | Props]}, #state{node=Node
             lager:debug("buffering call events for 1 second post transfer"),
             timer:sleep(1000),
             {'noreply', State};
-        {_, _} ->
+        {<<"RECORD_STOP">>, _} ->
+            spawn(
+                fun() ->
+                    case props:get_value(<<"variable_current_application_data">>, Props) of
+                        'undefined' ->
+                            MediaName = props:get_value(<<"variable_ecallmgr_Media-Name">>, Props),
+                            Destination = props:get_value(<<"variable_ecallmgr_Media-Transfer-Destination">>, Props),
+                            JObj = wh_json:from_list([
+                                {<<"Application-Name">>, <<"store">>}
+                                ,{<<"Insert-At">>, props:get_value(<<"variable_ecallmgr_Insert-At">>, Props)}
+                                ,{<<"Media-Name">>, MediaName}
+                                ,{<<"Media-Transfer-Destination">>, <<Destination/binary, MediaName/binary>>}
+                                ,{<<"Media-Transfer-Method">>, props:get_value(<<"variable_ecallmgr_Media-Transfer-Method">>, Props)}
+                                ,{<<"Call-ID">>, CallId}
+                                ,{<<"Event-Category">>, <<"call">>}
+                                ,{<<"Event-Name">>, <<"command">>}
+                                ,{<<"Msg-ID">>, CallId}
+                                | wh_api:default_headers(?APP_NAME, ?APP_VERSION)
+                            ]),
+                            ecallmgr_call_command:exec_cmd(Node, CallId, JObj, 'undefined');
+                        _ -> process_channel_event(Props)
+                    end
+                end
+            ),
+            {'noreply', State};
+        {_A, _B} ->
             process_channel_event(Props),
             {'noreply', State}
     end;
@@ -552,6 +577,7 @@ generic_call_event_props(Props) ->
      ,{<<"Media-Server">>, props:get_value(<<"FreeSWITCH-Hostname">>, Props)}
      ,{<<"Replaced-By">>, props:get_value(<<"att_xfer_replaced_by">>, Props)}
      ,{<<"Custom-Channel-Vars">>, wh_json:from_list(ecallmgr_util:custom_channel_vars(Props))}
+     ,{<<"Custom-SIP-Headers">>, wh_json:from_list(ecallmgr_util:custom_sip_headers(Props))}
      | wh_api:default_headers(?APP_NAME, ?APP_VERSION)
     ].
 

@@ -34,20 +34,22 @@ authorize(Props, CallId, Node) ->
     end.
 
 -spec kill_channel(wh_proplist(), atom()) -> 'ok'.
--spec kill_channel(ne_binary(), ne_binary(), atom()) -> 'ok'.
+-spec kill_channel(ne_binary(), ne_binary(), ne_binary(), atom()) -> 'ok'.
 
 kill_channel(Props, Node) ->
     Direction = props:get_value(<<"Call-Direction">>, Props),
+    ResourceType = props:get_value(<<"Resource-Type">>, Props, <<"audio">>),
     CallId = props:get_value(<<"Unique-ID">>, Props),
     lager:debug("killing unauthorized channel", []),
-    kill_channel(Direction, CallId, Node).
+    kill_channel(Direction, ResourceType, CallId, Node).
 
-kill_channel(<<"inbound">>, CallId, Node) ->
+kill_channel(_, <<"sms">>, _CallId, _Node) -> 'ok';
+kill_channel(<<"inbound">>, _, CallId, Node) ->
     %% Give any pending route requests a chance to cleanly terminate this call,
     %% if it has not been processed yet.  Then chop its head off....
     _ = freeswitch:api(Node, 'uuid_kill', wh_util:to_list(<<CallId/binary, " INCOMING_CALL_BARRED">>)),
     'ok';
-kill_channel(<<"outbound">>, CallId, Node) ->
+kill_channel(<<"outbound">>, _, CallId, Node) ->
     _ = freeswitch:api(Node, 'uuid_kill', wh_util:to_list(<<CallId/binary, " OUTGOING_CALL_BARRED">>)),
     'ok'.
 
@@ -124,11 +126,11 @@ is_consuming_resource(Props, CallId, Node) ->
             end
     end.
 
--spec request_channel_authorization(wh_proplist(), ne_binary(), atom()) -> boolean().
+-spec request_channel_authorization(wh_proplist(), ne_binary(), atom()) ->
+                                           boolean().
 request_channel_authorization(Props, CallId, Node) ->
     lager:debug("channel authorization request started"),
-    ReqResp = wh_amqp_worker:call(?ECALLMGR_AMQP_POOL
-                                  ,authz_req(Props)
+    ReqResp = wh_amqp_worker:call(authz_req(Props)
                                   ,fun wapi_authz:publish_authz_req/1
                                   ,fun wapi_authz:authz_resp_v/1
                                   ,5000),
@@ -220,8 +222,7 @@ rate_channel(Props, Node) ->
     CallId = props:get_value(<<"Unique-ID">>, Props),
     put('callid', CallId),
     lager:debug("sending rate request"),
-    ReqResp = wh_amqp_worker:call(?ECALLMGR_AMQP_POOL
-                                  ,rating_req(CallId, Props)
+    ReqResp = wh_amqp_worker:call(rating_req(CallId, Props)
                                   ,fun wapi_rate:publish_req/1
                                   ,fun wapi_rate:resp_v/1
                                   ,10000
