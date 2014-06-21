@@ -23,7 +23,21 @@
 
 -include("../crossbar.hrl").
 
+-define(KICKOFF_PATH_TOKEN, <<"kickoff">>).
+-define(KICKOFF_URL, [{<<"conferences">>, [_, ?KICKOFF_PATH_TOKEN]}
+                      ,{?WH_ACCOUNT_DB, [_]}
+                     ]).
+-define(PICKUP_PATH_TOKEN, <<"pickup">>).
+-define(PICKUP_URL, [{<<"conferences">>, [_, ?PICKUP_PATH_TOKEN, _]}
+                     ,{?WH_ACCOUNT_DB, [_]}
+                    ]).
+-define(KICKOUT_PATH_TOKEN, <<"kickout">>).
+-define(KICKOUT_URL, [{<<"conferences">>, [_, ?KICKOUT_PATH_TOKEN, _]}
+                     ,{?WH_ACCOUNT_DB, [_]}
+                    ]).
+
 -define(CB_LIST, <<"conferences/crossbar_listing">>).
+
 
 %%%===================================================================
 %%% API
@@ -51,6 +65,12 @@ allowed_methods() ->
     [?HTTP_GET, ?HTTP_PUT].
 allowed_methods(_) ->
     [?HTTP_GET, ?HTTP_POST, ?HTTP_DELETE].
+allowed_methods(_, ?KICKOFF_PATH_TOKEN) ->
+    [?HTTP_POST].
+allowed_methods(_, ?PICKUP_PATH_TOKEN) ->
+    [?HTTP_POST].
+allowed_methods(_, ?KICKOUT_PATH_TOKEN) ->
+    [?HTTP_POST].
 
 %%--------------------------------------------------------------------
 %% @public
@@ -65,6 +85,12 @@ allowed_methods(_) ->
 resource_exists() ->
     true.
 resource_exists(_) ->
+    true.
+resource_exists(_, ?KICKOFF_PATH_TOKEN) ->
+    true.
+resource_exists(_, ?PICKUP_PATH_TOKEN, _) ->
+    true.
+resource_exists(_, ?KICKOUT_PATH_TOKEN, _) ->
     true.
 
 
@@ -91,9 +117,42 @@ validate(#cb_context{req_verb = ?HTTP_POST}=Context, Id) ->
 validate(#cb_context{req_verb = ?HTTP_DELETE}=Context, Id) ->
     load_conference(Id, Context).
 
+validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN) ->
+    %TODO: call conference members/moderators and bridge them to the conference.
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> kickoff_conference(ConferenceId, Context1);
+        _Status -> Context1
+    end.
+
+validate(Context, ConferenceId, ?PICKUP_PATH_TOKEN, CalleeNum) ->
+    %TODO: call CalleeNum and bridge it to the conference.
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> pickup_conf_participant(ConferenceId, CalleeNum, Context1);
+        _Status -> Context1
+    end;
+
+validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN, CalleeNum) ->
+    %TODO: kick CalleeNum out of the conference.
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> kickout_conf_participatn(ConferenceId, CalleeNum, Context1);
+        _Status -> Context1
+    end.
+
+
 -spec post(#cb_context{}, path_token()) -> #cb_context{}.
 post(Context, _) ->
     crossbar_doc:save(Context).
+
+post(Context, _, ?KICKOFF_PATH_TOKEN) ->
+    Context.
+
+post(Context, _, ?PICKUP_PATH_TOKEN, _) ->
+    Context;
+post(Context, _, ?KICKOUT_PATH_TOKEN, _) ->
+    Context.
 
 -spec put(#cb_context{}) -> #cb_context{}.
 put(Context) ->
@@ -191,3 +250,100 @@ normalize_users_results(JObj, Acc, UserId) ->
         UserId -> normalize_view_results(JObj, Acc);
         _ -> [undefined|Acc]
     end.
+
+
+process_participant(CalleeNum, Context) ->
+    Jobj = cb_context:doc(Context),
+    AccountId = cb_context:account_id(Context),
+    CCVs = [{<<"Account-ID">>, AccountId}
+            ,{<<"Auto-Answer">>, <<"true">>}
+            ,{<<"Retain-CID">>, <<"true">>}
+            ,{<<"Authorizing-ID">>, wh_json:get_value(<<"_id">>, JObj)}
+            ,{<<"Inherit-Codec">>, <<"false">>}
+            ,{<<"Authorizing-Type">>, <<"device">>}
+           ],
+
+    {'ok', AccountDoc} = couch_mgr:open_cache_doc(?WH_ACCOUNTS_DB, AccountId),
+
+    Endpoint = [{<<"Invite-Format">>, <<"route">>}
+                ,{<<"Route">>,  <<"loopback/", ConfNum/binary, "/context_2">>}
+                ,{<<"To-DID">>, ConfNum}
+                ,{<<"To-Realm">>, wh_json:get_value(<<"realm">>, AccountDoc)}
+                ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
+               ],
+
+    MsgId = wh_json:get_value(<<"Msg-ID">>, JObj, wh_util:rand_hex_binary(16)),
+    Request = props:filter_undefined(
+                [{<<"Application-Name">>, <<"transfer">>}
+                 ,{<<"Application-Data">>, wh_json:from_list([{<<"Route">>, Contact}])}
+                 ,{<<"Msg-ID">>, MsgId}
+                 ,{<<"Endpoints">>, [wh_json:from_list(Endpoint)]}
+                 ,{<<"Timeout">>, wh_json:get_value(<<"Timeout">>, JObj)}
+                 ,{<<"Ignore-Early-Media">>, wh_json:get_value(<<"Ignore-Early-Media">>, JObj)}
+                 ,{<<"Media">>, wh_json:get_value(<<"Media">>, JObj)}
+                 ,{<<"Hold-Media">>, wh_json:get_value(<<"Hold-Media">>, JObj)}
+                 ,{<<"Presence-ID">>, wh_json:get_value(<<"Presence-ID">>, JObj)}
+                 ,{<<"Outbound-Callee-ID-Name">>, ConfNum}
+                 ,{<<"Outbound-Callee-ID-Number">>, ConfNum}
+                 ,{<<"Outbound-Caller-ID-Name">>, CalleeNum}
+                 ,{<<"Outbound-Caller-ID-Number">>, CalleeNum}
+                 ,{<<"Ringback">>, wh_json:get_value(<<"Ringback">>, JObj)}
+                 ,{<<"Dial-Endpoint-Method">>, <<"single">>}
+                 ,{<<"Continue-On-Fail">>, 'true'}
+                 ,{<<"SIP-Headers">>, wh_json:get_value(<<"SIP-Headers">>, JObj)}
+                 ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
+                 ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>, <<"Authorizing-ID">>, <<"Authorizing-Type">>]}
+                 | wh_api:default_headers(<<"resource">>, <<"originate_req">>, ?APP_NAME, ?APP_VERSION)
+                ]),
+
+    case whapps_util:amqp_pool_collect(Request
+                                       ,fun wapi_resource:publish_originate_req/1
+                                       ,fun is_resp/1
+                                       ,20000
+                                      )
+    of
+        {'ok', [Resp|_]} ->
+            AppResponse = wh_json:get_first_defined([<<"Application-Response">>
+                                                     ,<<"Hangup-Cause">>
+                                                     ,<<"Error-Message">>
+                                                    ], JObj),
+            case lists:member(AppResponse, ?SUCCESSFUL_HANGUP_CAUSES) of
+                'true' ->
+                    {'success', wh_json:get_value(<<"Call-ID">>, Resp)};
+                'false' when AppResponse =:= 'undefined' ->
+                    {'success', wh_json:get_value(<<"Call-ID">>, Resp)};
+                'false' ->
+                    lager:debug("app response ~s not successful: ~p", [AppResponse, Resp]),
+                    {'error', AppResponse}
+            end;
+        {'returned', _JObj, Return} ->
+            case {wh_json:get_value(<<"code">>, Return)
+                  ,wh_json:get_value(<<"message">>, Return)
+                 }
+            of
+                {312, _Msg} ->
+                    lager:debug("no resources available to take request: ~s", [_Msg]),
+                    {'error', <<"no resources">>};
+                {_Code, Msg} ->
+                    lager:debug("failed to publish request: ~p: ~s", [_Code, Msg]),
+                    {'error', <<"request failed: ", Msg>>}
+            end;
+        {'error', _E} ->
+            lager:debug("errored while originating: ~p", [_E]),
+            {'error', <<"timed out">>};
+        {'timeout', _T} ->
+            lager:debug("timed out while originating: ~p", [_T]),
+            {'error', <<"timed out">>}
+    end.
+
+-spec is_resp(wh_json:objects() | wh_json:object()) -> boolean().
+is_resp([JObj|_]) -> is_resp(JObj);
+is_resp(JObj) ->
+    wapi_resource:originate_resp_v(JObj) orelse
+        wh_api:error_resp_v(JObj).
+
+kickoff_conference(ConferenceId, Context) ->
+    %originate callee simutaneously
+    Jobj = cb_context:doc(Context),
+    lists:foreach(fun(CalleeNum) -> process_participant(CalleeNum, Context), wh_json:get_value(<<"moderator">>, Jobj)),
+    lists:foreach(fun(CalleeNum) -> process_participant(CalleeNum, Context), wh_json:get_value(<<"members">>, Jobj)).
