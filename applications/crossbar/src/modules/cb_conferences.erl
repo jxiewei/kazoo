@@ -14,10 +14,13 @@
 
 -export([init/0
          ,allowed_methods/0, allowed_methods/1
+         ,allowed_methods/2
          ,resource_exists/0, resource_exists/1
+         ,resource_exists/2, resource_exists/3
          ,validate/1, validate/2
+         ,validate/3, validate/4
          ,put/1
-         ,post/2
+         ,post/2, post/3, post/4
          ,delete/2
         ]).
 
@@ -35,6 +38,7 @@
 -define(KICKOUT_URL, [{<<"conferences">>, [_, ?KICKOUT_PATH_TOKEN, _]}
                      ,{?WH_ACCOUNT_DB, [_]}
                     ]).
+-define(SUCCESSFUL_HANGUP_CAUSES, [<<"NORMAL_CLEARING">>, <<"ORIGINATOR_CANCEL">>, <<"SUCCESS">>]).
 
 -define(CB_LIST, <<"conferences/crossbar_listing">>).
 
@@ -66,9 +70,9 @@ allowed_methods() ->
 allowed_methods(_) ->
     [?HTTP_GET, ?HTTP_POST, ?HTTP_DELETE].
 allowed_methods(_, ?KICKOFF_PATH_TOKEN) ->
-    [?HTTP_POST].
+    [?HTTP_POST];
 allowed_methods(_, ?PICKUP_PATH_TOKEN) ->
-    [?HTTP_POST].
+    [?HTTP_POST];
 allowed_methods(_, ?KICKOUT_PATH_TOKEN) ->
     [?HTTP_POST].
 
@@ -89,7 +93,7 @@ resource_exists(_) ->
 resource_exists(_, ?KICKOFF_PATH_TOKEN) ->
     true.
 resource_exists(_, ?PICKUP_PATH_TOKEN, _) ->
-    true.
+    true;
 resource_exists(_, ?KICKOUT_PATH_TOKEN, _) ->
     true.
 
@@ -121,23 +125,23 @@ validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN) ->
     %TODO: call conference members/moderators and bridge them to the conference.
     Context1 = load_conference(ConferenceId, Context),
     case cb_context:resp_status(Context1) of
-        'success' -> kickoff_conference(ConferenceId, Context1);
+        'success' -> kickoff_conference(Context1);
         _Status -> Context1
     end.
 
-validate(Context, ConferenceId, ?PICKUP_PATH_TOKEN, CalleeNum) ->
+validate(Context, ConferenceId, ?PICKUP_PATH_TOKEN, _Number) ->
     %TODO: call CalleeNum and bridge it to the conference.
     Context1 = load_conference(ConferenceId, Context),
     case cb_context:resp_status(Context1) of
-        'success' -> pickup_conf_participant(ConferenceId, CalleeNum, Context1);
+        %'success' -> pickup_conf_participant(ConferenceId, _Number, Context1);
         _Status -> Context1
     end;
 
-validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN, CalleeNum) ->
+validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN, _Number) ->
     %TODO: kick CalleeNum out of the conference.
     Context1 = load_conference(ConferenceId, Context),
     case cb_context:resp_status(Context1) of
-        'success' -> kickout_conf_participatn(ConferenceId, CalleeNum, Context1);
+        %'success' -> kickout_conf_participatn(ConferenceId, _Number, Context1);
         _Status -> Context1
     end.
 
@@ -252,45 +256,34 @@ normalize_users_results(JObj, Acc, UserId) ->
     end.
 
 
-process_participant(CalleeNum, Context) ->
-    Jobj = cb_context:doc(Context),
+process_participant(_Type, Number, Context) ->
+    JObj = cb_context:doc(Context),
     AccountId = cb_context:account_id(Context),
     CCVs = [{<<"Account-ID">>, AccountId}
             ,{<<"Auto-Answer">>, <<"true">>}
-            ,{<<"Retain-CID">>, <<"true">>}
-            ,{<<"Authorizing-ID">>, wh_json:get_value(<<"_id">>, JObj)}
+            ,{<<"Retain-CID">>, <<"false">>}
+            %,{<<"Authorizing-ID">>, wh_json:get_value(<<"_id">>, JObj)}
             ,{<<"Inherit-Codec">>, <<"false">>}
-            ,{<<"Authorizing-Type">>, <<"device">>}
+            %,{<<"Authorizing-Type">>, <<"conference">>}
            ],
 
     {'ok', AccountDoc} = couch_mgr:open_cache_doc(?WH_ACCOUNTS_DB, AccountId),
 
     Endpoint = [{<<"Invite-Format">>, <<"route">>}
-                ,{<<"Route">>,  <<"loopback/", ConfNum/binary, "/context_2">>}
-                ,{<<"To-DID">>, ConfNum}
+                ,{<<"Route">>,  <<"loopback/", Number/binary, "/context_2">>}
+                ,{<<"To-DID">>, Number}
                 ,{<<"To-Realm">>, wh_json:get_value(<<"realm">>, AccountDoc)}
                 ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
                ],
 
     MsgId = wh_json:get_value(<<"Msg-ID">>, JObj, wh_util:rand_hex_binary(16)),
     Request = props:filter_undefined(
-                [{<<"Application-Name">>, <<"transfer">>}
-                 ,{<<"Application-Data">>, wh_json:from_list([{<<"Route">>, Contact}])}
+                [{<<"Application-Name">>, <<"conference">>}
+                 ,{<<"Application-Data">>, wh_json:get_value(<<"_id">>, JObj)}
                  ,{<<"Msg-ID">>, MsgId}
                  ,{<<"Endpoints">>, [wh_json:from_list(Endpoint)]}
-                 ,{<<"Timeout">>, wh_json:get_value(<<"Timeout">>, JObj)}
-                 ,{<<"Ignore-Early-Media">>, wh_json:get_value(<<"Ignore-Early-Media">>, JObj)}
-                 ,{<<"Media">>, wh_json:get_value(<<"Media">>, JObj)}
-                 ,{<<"Hold-Media">>, wh_json:get_value(<<"Hold-Media">>, JObj)}
-                 ,{<<"Presence-ID">>, wh_json:get_value(<<"Presence-ID">>, JObj)}
-                 ,{<<"Outbound-Callee-ID-Name">>, ConfNum}
-                 ,{<<"Outbound-Callee-ID-Number">>, ConfNum}
-                 ,{<<"Outbound-Caller-ID-Name">>, CalleeNum}
-                 ,{<<"Outbound-Caller-ID-Number">>, CalleeNum}
-                 ,{<<"Ringback">>, wh_json:get_value(<<"Ringback">>, JObj)}
                  ,{<<"Dial-Endpoint-Method">>, <<"single">>}
                  ,{<<"Continue-On-Fail">>, 'true'}
-                 ,{<<"SIP-Headers">>, wh_json:get_value(<<"SIP-Headers">>, JObj)}
                  ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
                  ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>, <<"Authorizing-ID">>, <<"Authorizing-Type">>]}
                  | wh_api:default_headers(<<"resource">>, <<"originate_req">>, ?APP_NAME, ?APP_VERSION)
@@ -342,8 +335,12 @@ is_resp(JObj) ->
     wapi_resource:originate_resp_v(JObj) orelse
         wh_api:error_resp_v(JObj).
 
-kickoff_conference(ConferenceId, Context) ->
+kickoff_conference(Context) ->
     %originate callee simutaneously
-    Jobj = cb_context:doc(Context),
-    lists:foreach(fun(CalleeNum) -> process_participant(CalleeNum, Context), wh_json:get_value(<<"moderator">>, Jobj)),
-    lists:foreach(fun(CalleeNum) -> process_participant(CalleeNum, Context), wh_json:get_value(<<"members">>, Jobj)).
+    JObj = cb_context:doc(Context),
+    Moderators = wh_json:get_value([<<"moderator">>, <<"numbers">>], JObj),
+    Members = wh_json:get_value([<<"member">>, <<"numbers">>], JObj),
+    ReqId = cb_context:req_id(Context),
+    put('callid', ReqId),
+    lists:foreach(fun(Number) -> process_participant(moderator, Number, Context) end, Moderators),
+    lists:foreach(fun(Number) -> process_participant(member, Number, Context) end, Members).

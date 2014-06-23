@@ -46,6 +46,16 @@
 -define(DEVICES_QCALL_NOUNS, [{<<"devices">>, [_DeviceId, <<"quickcall">>, _Number]}
                               ,{?WH_ACCOUNTS_DB, [_]}
                              ]).
+-define(CONFERENCE_KICKOFF_NOUNS, [{<<"conferences">>, [_ConferenceId, <<"kickoff">>]}
+                                   ,{?WH_ACCOUNTS_DB, [_]}
+                                  ]).
+-define(CONFERENCE_PICKUP_NOUNS, [{<<"conferneces">>, [_ConferenceId, <<"pickup">>, _Number]}
+                                  ,{?WH_ACCOUNTS_DB, [_]}
+                                 ]).
+-define(CONFERENCE_KICKOUT_NOUNS, [{<<"conferneces">>, [_ConferenceId, <<"kickout">>, _Number]}
+                                  ,{?WH_ACCOUNTS_DB, [_]}
+                                 ]).
+
 
 -define(DEFAULT_MODULES, ['cb_about'
                           ,'cb_accounts'

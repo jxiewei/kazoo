@@ -442,6 +442,16 @@ get_originate_action(<<"transfer">>, JObj) ->
                             ," XML ", Context, "' inline"
                            ])
     end;
+get_originate_action(<<"conference">>, JObj) ->
+    case wh_json:get_value(<<"Application-Data">>, JObj) of
+        'undefined' -> <<"error">>;
+        CName ->
+            Context = ?DEFAULT_FREESWITCH_CONTEXT,
+            list_to_binary(["'m:^:", get_unset_vars(JObj)
+                            ,"conference:", CName 
+                            ," XML ", Context, "' inline"
+                           ])
+    end;
 get_originate_action(<<"bridge">>, JObj) ->
     lager:debug("got originate with action bridge"),
     CallId = wh_json:get_binary_value(<<"Existing-Call-ID">>, JObj),
