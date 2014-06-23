@@ -39,6 +39,12 @@
 
 -define(PVT_TYPE, <<"account">>).
 -define(CHANNELS, <<"channels">>).
+-define(CHILDREN, <<"children">>).
+-define(DESCENDANTS, <<"descendants">>).
+-define(SIBLINGS, <<"siblings">>).
+-define(ANCESTORS, <<"ancestors">>).
+
+-define(REMOVE_SPACES, [<<"realm">>]).
 
 -spec init() -> 'ok'.
 init() ->
@@ -66,10 +72,22 @@ init() ->
 -spec allowed_methods(path_token(), ne_binary()) -> http_methods().
 allowed_methods() ->
     [?HTTP_PUT].
-allowed_methods(_) ->
-    [?HTTP_GET, ?HTTP_PUT, ?HTTP_POST, ?HTTP_DELETE].
+
+allowed_methods(AccountId) ->
+    case whapps_util:get_master_account_id() of
+        {'ok', AccountId} ->
+            lager:debug("accessing master account, disallowing DELETE"),
+            [?HTTP_GET, ?HTTP_PUT, ?HTTP_POST];
+        {'ok', _MasterId} ->
+            [?HTTP_GET, ?HTTP_PUT, ?HTTP_POST, ?HTTP_DELETE];
+        {'error', _E} ->
+            lager:debug("failed to get master account id: ~p", [_E]),
+            lager:info("disallowing DELETE while we can't determine the master account id"),
+            [?HTTP_GET, ?HTTP_PUT, ?HTTP_POST]
+    end.
+
 allowed_methods(_, Path) ->
-    case lists:member(Path, [<<"ancestors">>, <<"children">>, <<"descendants">>, <<"siblings">>, ?CHANNELS]) of
+    case lists:member(Path, [?ANCESTORS, ?CHILDREN, ?DESCENDANTS,?SIBLINGS, ?CHANNELS]) of
         'true' -> [?HTTP_GET];
         'false' -> []
     end.
@@ -88,7 +106,7 @@ allowed_methods(_, Path) ->
 resource_exists() -> 'true'.
 resource_exists(_) -> 'true'.
 resource_exists(_, Path) ->
-    lists:member(Path, [<<"ancestors">>, <<"children">>, <<"descendants">>, <<"siblings">>, ?CHANNELS]).
+    lists:member(Path, [?ANCESTORS, ?CHILDREN, ?DESCENDANTS,?SIBLINGS, ?CHANNELS]).
 
 %%--------------------------------------------------------------------
 %% @public
@@ -137,11 +155,11 @@ validate(Context, AccountId, PathToken) ->
                                    cb_context:context().
 validate_account_path(Context, AccountId, ?CHANNELS, ?HTTP_GET) ->
     get_channels(AccountId, Context);
-validate_account_path(Context, AccountId, <<"children">>, ?HTTP_GET) ->
+validate_account_path(Context, AccountId, ?CHILDREN, ?HTTP_GET) ->
     load_children(AccountId, prepare_context('undefined', Context));
-validate_account_path(Context, AccountId, <<"descendants">>, ?HTTP_GET) ->
+validate_account_path(Context, AccountId, ?DESCENDANTS, ?HTTP_GET) ->
     load_descendants(AccountId, prepare_context('undefined', Context));
-validate_account_path(Context, AccountId, <<"siblings">>, ?HTTP_GET) ->
+validate_account_path(Context, AccountId, ?SIBLINGS, ?HTTP_GET) ->
     load_siblings(AccountId, prepare_context('undefined', Context)).
 
 %%--------------------------------------------------------------------
@@ -291,9 +309,23 @@ ensure_account_has_realm(AccountId, Context) ->
             RealmSuffix = whapps_config:get_binary(?ACCOUNTS_CONFIG_CAT, <<"account_realm_suffix">>, <<"sip.2600hz.com">>),
             Strength = whapps_config:get_integer(?ACCOUNTS_CONFIG_CAT, <<"random_realm_strength">>, 3),
             J = wh_json:set_value(<<"realm">>, list_to_binary([wh_util:rand_hex_binary(Strength), ".", RealmSuffix]), JObj),
-            cleanup_leaky_keys(AccountId, cb_context:set_req_data(Context, J));
-        _Else -> cleanup_leaky_keys(AccountId, Context)
+            remove_spaces(AccountId, cb_context:set_req_data(Context, J));
+        _Else ->
+            remove_spaces(AccountId, Context)
     end.
+
+-spec remove_spaces(api_binary(), cb_context:context()) -> cb_context:context().
+remove_spaces(AccountId, Context) ->
+    JObj = cb_context:req_data(Context),
+    JObjNew = lists:foldl(fun(Key, Acc) ->
+                        case wh_json:get_value(Key, Acc) of
+                            'undefined' -> Acc;
+                            Value ->
+                                NoSpaces = binary:replace(Value, <<" ">>, <<>>, ['global']),
+                                wh_json:set_value(Key, NoSpaces, Acc)
+                        end
+                end, JObj, ?REMOVE_SPACES),
+    cleanup_leaky_keys(AccountId, cb_context:set_req_data(Context, JObjNew)).
 
 -spec cleanup_leaky_keys(api_binary(), cb_context:context()) -> cb_context:context().
 cleanup_leaky_keys(AccountId, Context) ->

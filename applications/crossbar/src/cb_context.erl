@@ -42,6 +42,7 @@
          ,query_string/1, set_query_string/2
          ,client_ip/1
          ,doc/1, set_doc/2
+         ,load_merge_bypass/1, set_load_merge_bypass/2
          ,start/1, set_start/2
          ,resp_data/1, set_resp_data/2
          ,resp_status/1, set_resp_status/2
@@ -139,6 +140,7 @@ query_string(#cb_context{query_json=Q}) -> Q.
 client_ip(#cb_context{client_ip=IP}) -> IP.
 req_id(#cb_context{req_id=ReqId}) -> ReqId.
 doc(#cb_context{doc=Doc}) -> Doc.
+load_merge_bypass(#cb_context{load_merge_bypass=ByPass}) -> ByPass.
 start(#cb_context{start=Start}) -> Start.
 resp_data(#cb_context{resp_data=RespData}) -> RespData.
 resp_status(#cb_context{resp_status=RespStatus}) -> RespStatus.
@@ -154,7 +156,7 @@ method(#cb_context{method=M}) -> M.
 
 -spec path_tokens(context()) -> ne_binaries().
 path_tokens(#cb_context{raw_path=Path}) ->
-    [cowboy_http:urldecode(Token) || Token <- binary:split(Path, <<"/">>, ['global', 'trim'])].
+    [cow_qs:urldecode(Token) || Token <- binary:split(Path, <<"/">>, ['global', 'trim'])].
 
 -spec magic_pathed(context()) -> boolean().
 magic_pathed(#cb_context{magic_pathed=MP}) -> MP.
@@ -190,6 +192,7 @@ setters_fold({F, K, V}, C) -> F(C, K, V).
 -spec set_query_string(context(), wh_json:object()) -> context().
 -spec set_req_id(context(), ne_binary()) -> context().
 -spec set_doc(context(), api_object() | wh_json:objects()) -> context().
+-spec set_load_merge_bypass(context(), api_binary()) -> context().
 -spec set_start(context(), wh_now()) -> context().
 -spec set_resp_data(context(), resp_data()) -> context().
 -spec set_resp_status(context(), crossbar_status()) -> context().
@@ -225,6 +228,7 @@ set_req_nouns(#cb_context{}=Context, ReqNouns) -> Context#cb_context{req_nouns=R
 set_query_string(#cb_context{}=Context, Q) -> Context#cb_context{query_json=Q}.
 set_req_id(#cb_context{}=Context, ReqId) -> Context#cb_context{req_id=ReqId}.
 set_doc(#cb_context{}=Context, Doc) -> Context#cb_context{doc=Doc}.
+set_load_merge_bypass(#cb_context{}=Context, JObj) -> Context#cb_context{load_merge_bypass=JObj}.
 set_start(#cb_context{}=Context, Start) -> Context#cb_context{start=Start}.
 set_resp_data(#cb_context{}=Context, RespData) -> Context#cb_context{resp_data=RespData}.
 set_resp_status(#cb_context{}=Context, RespStatus) -> Context#cb_context{resp_status=RespStatus}.
@@ -653,7 +657,20 @@ failed_error({'data_invalid'
                          ,Context
                         );
 
-
+failed_error({'data_invalid'
+              ,_FailedSchemaJObj
+              ,{'missing_required_property', FailKey}
+              ,_FailedValue
+              ,FailedKeyPath
+             }, Context) ->
+    lager:debug("failed message: ~p", [FailKey]),
+    lager:debug("failed schema: ~p", [_FailedSchemaJObj]),
+    lager:debug("failed value: ~p", [_FailedValue]),
+    lager:debug("failed keypath: ~p", [FailedKeyPath]),
+    add_validation_error([FailedKeyPath, FailKey]
+                         ,<<"required">>
+                         ,<<"Field is required but missing">>
+                         ,Context);
 failed_error({'data_invalid'
               ,_FailedSchemaJObj
               ,FailMsg
@@ -700,7 +717,7 @@ passed(#cb_context{req_data=Data}=Context, Status) ->
 
 -spec find_schema(ne_binary()) -> api_object().
 find_schema(<<_/binary>> = Schema) ->
-    case couch_mgr:open_cache_doc(?WH_SCHEMA_DB, Schema) of
+    case wh_json_schema:load(Schema) of
         {'ok', SchemaJObj} -> SchemaJObj;
         {'error', _E} ->
             lager:debug("failed to find schema ~s: ~p", [Schema, _E]),

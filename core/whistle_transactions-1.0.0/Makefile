@@ -1,6 +1,5 @@
 PROJECT = whistle_transactions
 ROOT = ../..
-REBAR = $(ROOT)/utils/rebar/rebar
 DIALYZER = dialyzer
 
 EBINS = $(shell find $(ROOT)/core -maxdepth 2 -name ebin -print) $(shell find $(ROOT)/deps -maxdepth 2 -name ebin -print)
