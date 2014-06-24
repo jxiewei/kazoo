@@ -262,9 +262,11 @@ process_participant(_Type, Number, Context) ->
     CCVs = [{<<"Account-ID">>, AccountId}
             ,{<<"Auto-Answer">>, <<"true">>}
             ,{<<"Retain-CID">>, <<"false">>}
-            %,{<<"Authorizing-ID">>, wh_json:get_value(<<"_id">>, JObj)}
+            ,{<<"Authorizing-ID">>, wh_json:get_value(<<"_id">>, JObj)} %replace it with _UserId
             ,{<<"Inherit-Codec">>, <<"false">>}
-            %,{<<"Authorizing-Type">>, <<"conference">>}
+            ,{<<"Username">>, <<"admin">>}
+            ,{<<"Realm">>, <<"hangzhou.clowork.com">>}
+            ,{<<"Authorizing-Type">>, <<"user">>}
            ],
 
     {'ok', AccountDoc} = couch_mgr:open_cache_doc(?WH_ACCOUNTS_DB, AccountId),
@@ -282,6 +284,10 @@ process_participant(_Type, Number, Context) ->
                  ,{<<"Application-Data">>, wh_json:get_value(<<"_id">>, JObj)}
                  ,{<<"Msg-ID">>, MsgId}
                  ,{<<"Endpoints">>, [wh_json:from_list(Endpoint)]}
+                 ,{<<"Outbound-Caller-ID-Name">>, wh_json:get_value(<<"name">>, JObj)}
+                 ,{<<"Outbound-Caller-ID-Number">>, <<"123456">>}
+                 ,{<<"Outbound-Callee-ID-Name">>, Number}
+                 ,{<<"Outbound-Callee-ID-Number">>, Number}
                  ,{<<"Dial-Endpoint-Method">>, <<"single">>}
                  ,{<<"Continue-On-Fail">>, 'true'}
                  ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}

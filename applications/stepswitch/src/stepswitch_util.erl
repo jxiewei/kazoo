@@ -65,6 +65,7 @@ assume_e164(Number) -> <<$+, Number/binary>>.
 -spec get_outbound_destination(wh_json:object()) -> ne_binary().
 get_outbound_destination(JObj) ->
     {Number, _} = whapps_util:get_destination(JObj, ?APP_NAME, <<"outbound_user_field">>),
+    lager:debug("==jerry== orig outbound_user_field is ~p~n", [Number]),
      case wh_json:is_true(<<"Bypass-E164">>, JObj) of
          'false' -> wnm_util:to_e164(Number);
          'true' -> Number

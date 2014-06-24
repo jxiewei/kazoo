@@ -40,6 +40,7 @@ handle_req(JObj, _Props) ->
 %%--------------------------------------------------------------------
 -spec handle_audio_req(wh_json:object()) -> any().
 handle_audio_req(JObj) ->
+    lager:debug("==jerry== handle_audio_req JObj ~p~n", [JObj]),
     Number = stepswitch_util:get_outbound_destination(JObj),
     lager:debug("received outbound audio resource request for ~s", [Number]),
     case stepswitch_util:lookup_number(Number) of
