@@ -17,7 +17,9 @@
 -spec handle_req(wh_json:object(), wh_proplist()) -> 'ok'.
 handle_req(JObj, Props) ->
     'true' = wapi_route:req_v(JObj),
+    lager:debug("==jerry== route_req ~p~n", [JObj]),
     Call = whapps_call:from_route_req(JObj),
+    lager:debug("==jerry-- call from route_req ~p~n", [Call]),
     case is_binary(whapps_call:account_id(Call))
         andalso callflow_should_respond(Call)
         andalso callflow_resource_allowed(Call)

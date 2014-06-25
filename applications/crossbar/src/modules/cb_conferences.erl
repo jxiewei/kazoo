@@ -41,6 +41,7 @@
 -define(SUCCESSFUL_HANGUP_CAUSES, [<<"NORMAL_CLEARING">>, <<"ORIGINATOR_CANCEL">>, <<"SUCCESS">>]).
 
 -define(CB_LIST, <<"conferences/crossbar_listing">>).
+-define(DEVICES_VIEW, <<"devices/listing_by_owner">>).
 
 
 %%%===================================================================
@@ -256,38 +257,94 @@ normalize_users_results(JObj, Acc, UserId) ->
     end.
 
 
+gen_conf_data(Conference) ->
+    {Mute, Deaf} =
+        case whapps_conference:moderator(Conference) of
+            'true' ->
+                {whapps_conference:moderator_join_muted(Conference)
+                 ,whapps_conference:moderator_join_deaf(Conference)
+                };
+            'false' ->
+                {whapps_conference:member_join_muted(Conference)
+                 ,whapps_conference:member_join_deaf(Conference)
+                }
+        end,
+    Command = [{<<"Conference-ID">>, whapps_conference:id(Conference)}
+               ,{<<"Mute">>, Mute}
+               ,{<<"Deaf">>, Deaf}
+               ,{<<"Moderator">>, whapps_conference:moderator(Conference)}
+               ,{<<"Profile">>, whapps_conference:profile(Conference)}
+              ].
+
 process_participant(_Type, Number, Context) ->
     JObj = cb_context:doc(Context),
     AccountId = cb_context:account_id(Context),
-    CCVs = [{<<"Account-ID">>, AccountId}
-            ,{<<"Auto-Answer">>, <<"true">>}
-            ,{<<"Retain-CID">>, <<"false">>}
-            ,{<<"Authorizing-ID">>, wh_json:get_value(<<"_id">>, JObj)} %replace it with _UserId
-            ,{<<"Inherit-Codec">>, <<"false">>}
-            ,{<<"Username">>, <<"admin">>}
-            ,{<<"Realm">>, <<"hangzhou.clowork.com">>}
-            ,{<<"Authorizing-Type">>, <<"user">>}
-           ],
+    AccountDb = cb_context:account_db(Context),
+
+    {'ok', AuthDoc} = couch_mgr:open_cache_doc(?TOKEN_DB, cb_context:auth_token(Context)),
+    UserId = wh_json:get_value(<<"owner_id">>, AuthDoc),
+    {'ok', UserDoc} = couch_mgr:open_cache_doc(AccountDb, UserId),
+    {'ok', ConferenceDoc} = couch_mgr:open_cache_doc(AccountDb, wh_json:get_value(<<"_id">>, JObj)),
+    lager:debug("==jerry== conerence_id ~p, conference doc ~p~n", [wh_json:get_value(<<"_id">>, JObj), ConferenceDoc]),
+
+    ViewOptions = [{'key', UserId}],
+    case couch_mgr:get_results(AccountDb, ?DEVICES_VIEW, ViewOptions) of
+        {'ok', JObjs} ->
+            SipDevices = lists:filter(fun(Obj) -> 
+                                        {'ok', Dev} = couch_mgr:open_cache_doc(AccountDb, wh_json:get_value([<<"value">>, <<"id">>], Obj)),
+                                        wh_json:get_value(<<"device_type">>, Dev) =:= <<"softphone">>
+                                      end, JObjs),
+            DeviceId = wh_json:get_value(<<"id">>, lists:nth(1, SipDevices));
+        {'error', _R} ->
+            DeviceId = 'undefined',
+            lager:debug("softphone device owned by ~p not found~n", [UserId])
+    end,
+
 
     {'ok', AccountDoc} = couch_mgr:open_cache_doc(?WH_ACCOUNTS_DB, AccountId),
+    {'ok', RequestDevice} = couch_mgr:open_cache_doc(AccountDb, DeviceId),
+    CallerId = wh_json:get_value([<<"caller_id">>, <<"external">>], UserDoc),
+    Realm = wh_json:get_ne_value(<<"realm">>, AccountDoc),
+    FromUser = wh_json:get_value([<<"sip">>, <<"username">>], RequestDevice),
+    MsgId = wh_json:get_value(<<"Msg-ID">>, JObj, wh_util:rand_hex_binary(16)),
+
+    CCVs = [{<<"Account-ID">>, AccountId}
+            ,{<<"Retain-CID">>, <<"true">>}
+            ,{<<"Inherit-Codec">>, <<"false">>}
+            ,{<<"Authorizing-Type">>, <<"device">>}
+            ,{<<"Authorizing-ID">>, DeviceId} 
+           ],
 
     Endpoint = [{<<"Invite-Format">>, <<"route">>}
                 ,{<<"Route">>,  <<"loopback/", Number/binary, "/context_2">>}
                 ,{<<"To-DID">>, Number}
-                ,{<<"To-Realm">>, wh_json:get_value(<<"realm">>, AccountDoc)}
+                ,{<<"To-Realm">>, Realm}
                 ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
                ],
 
-    MsgId = wh_json:get_value(<<"Msg-ID">>, JObj, wh_util:rand_hex_binary(16)),
+
+    C = whapps_conference:from_conference_doc(ConferenceDoc),
+    Conference = 
+        case _Type of
+            moderator -> whapps_conference:set_moderator('true', C);
+            member -> whapps_conference:set_moderator('false', C)
+        end,
+    whapps_conference:set_application_version(<<"2.0.0">>, Conference),
+    whapps_conference:set_application_name(<<"conferences">>, Conference), 
+    lager:debug("==jerry== whapps_conference ~p~n", [Conference]),
+    AppData = gen_conf_data(Conference),
+    lager:debug("==jerry== conference data ~p~n", [AppData]),
     Request = props:filter_undefined(
                 [{<<"Application-Name">>, <<"conference">>}
-                 ,{<<"Application-Data">>, wh_json:get_value(<<"_id">>, JObj)}
+                 ,{<<"Application-Data">>, wh_json:from_list(AppData)}
                  ,{<<"Msg-ID">>, MsgId}
                  ,{<<"Endpoints">>, [wh_json:from_list(Endpoint)]}
-                 ,{<<"Outbound-Caller-ID-Name">>, wh_json:get_value(<<"name">>, JObj)}
-                 ,{<<"Outbound-Caller-ID-Number">>, <<"123456">>}
+                 ,{<<"Outbound-Caller-ID-Name">>, wh_json:get_value(<<"name">>, CallerId)}
+                 ,{<<"Outbound-Caller-ID-Number">>, wh_json:get_value(<<"number">>, CallerId)}
                  ,{<<"Outbound-Callee-ID-Name">>, Number}
                  ,{<<"Outbound-Callee-ID-Number">>, Number}
+                 ,{<<"Request">>,<<FromUser/binary, <<"@">>/binary, Realm/binary>>} 
+                 ,{<<"From">>, <<FromUser/binary, <<"@">>/binary, Realm/binary>>}
                  ,{<<"Dial-Endpoint-Method">>, <<"single">>}
                  ,{<<"Continue-On-Fail">>, 'true'}
                  ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
@@ -305,7 +362,8 @@ process_participant(_Type, Number, Context) ->
             AppResponse = wh_json:get_first_defined([<<"Application-Response">>
                                                      ,<<"Hangup-Cause">>
                                                      ,<<"Error-Message">>
-                                                    ], JObj),
+                                                    ], Resp),
+            lager:debug("==jerry== app respond ok ~p~n", [Resp]),
             case lists:member(AppResponse, ?SUCCESSFUL_HANGUP_CAUSES) of
                 'true' ->
                     {'success', wh_json:get_value(<<"Call-ID">>, Resp)};
@@ -316,6 +374,7 @@ process_participant(_Type, Number, Context) ->
                     {'error', AppResponse}
             end;
         {'returned', _JObj, Return} ->
+            lager:debug("==jerry== amqp_pool_collect returned: ~p~n", [Return]),
             case {wh_json:get_value(<<"code">>, Return)
                   ,wh_json:get_value(<<"message">>, Return)
                  }
@@ -348,5 +407,7 @@ kickoff_conference(Context) ->
     Members = wh_json:get_value([<<"member">>, <<"numbers">>], JObj),
     ReqId = cb_context:req_id(Context),
     put('callid', ReqId),
+
     lists:foreach(fun(Number) -> process_participant(moderator, Number, Context) end, Moderators),
-    lists:foreach(fun(Number) -> process_participant(member, Number, Context) end, Members).
+    lists:foreach(fun(Number) -> process_participant(member, Number, Context) end, Members),
+    crossbar_util:response_202(<<"processing request">>, Context).

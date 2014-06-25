@@ -10,6 +10,7 @@
 -module(ecallmgr_call_command).
 
 -export([exec_cmd/4]).
+-export([get_conference_flags/1]).
 
 -include("ecallmgr.hrl").
 

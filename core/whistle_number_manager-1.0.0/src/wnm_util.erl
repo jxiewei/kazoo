@@ -337,11 +337,13 @@ maybe_convert_to_e164([], _, Number) -> Number;
 maybe_convert_to_e164([Regex|Regexs], Converters, Number) ->
     case re:run(Number, Regex, [{'capture', 'all', 'binary'}]) of
         'nomatch' ->
+            lager:debug("==jerry== maybe_convert_to_e164(~p) no match~n", [Number]),
             maybe_convert_to_e164(Regexs, Converters, Number);
         {'match', Captures} ->
             Root = lists:last(Captures),
             Prefix = wh_json:get_binary_value([Regex, <<"prefix">>], Converters, <<>>),
             Suffix = wh_json:get_binary_value([Regex, <<"suffix">>], Converters, <<>>),
+            lager:debug("==jerry== maybe_convert_to_e164(~p) matchd, prefix ~p, Root ~p, suffix ~p~n", [Number, Prefix, Root, Suffix]),
             <<Prefix/binary, Root/binary, Suffix/binary>>
     end.
 
