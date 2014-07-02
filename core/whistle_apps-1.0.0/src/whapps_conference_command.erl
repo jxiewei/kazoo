@@ -30,6 +30,12 @@
 
 -export([send_command/2]).
 
+
+is_search_resp([JObj|_]) -> is_resp(JObj);
+is_search_resp(JObj) ->
+    wapi_conference:search_resp_v(JObj) orelse
+    wapi_conference:conference_error_v(JObj).
+
 -spec search(whapps_conference:conference()) ->
                     {'ok', wh_json:object()} |
                     {'error', _}.
@@ -42,7 +48,7 @@ search(Conference) ->
           ],
     ReqResp = whapps_util:amqp_pool_collect(Req
                                             ,fun wapi_conference:publish_search_req/1
-                                            ,{'ecallmgr', fun wapi_conference:search_resp_v/1, 'true'}
+                                            ,{'ecallmgr', fun is_search_resp/1, 'true'}
                                            ),
     lager:debug("searching for conference ~s", [ConferenceId]),
     case ReqResp of
