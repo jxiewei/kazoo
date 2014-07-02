@@ -88,7 +88,7 @@
                                ,{<<"Dial-Endpoint-Method">>, [<<"single">>, <<"simultaneous">>]}
                                ,{<<"Media">>, [<<"process">>, <<"bypass">>, <<"auto">>]}
                                ,{<<"Application-Name">>, [<<"park">>, <<"bridge">>, <<"transfer">>
-                                                          ,<<"fax">>, <<"eavesdrop">>, <<"conference">>
+                                                          ,<<"fax">>, <<"eavesdrop">>, <<"conference">>, <<"noop">>
                                                          ]}
                                %% Eavesdrop
                                ,?EAVESDROP_MODE
