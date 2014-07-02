@@ -31,7 +31,7 @@
 -export([send_command/2]).
 
 
-is_search_resp([JObj|_]) -> is_resp(JObj);
+is_search_resp([JObj|_]) -> is_search_resp(JObj);
 is_search_resp(JObj) ->
     wapi_conference:search_resp_v(JObj) orelse
     wapi_conference:conference_error_v(JObj).
