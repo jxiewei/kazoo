@@ -129,26 +129,24 @@ handle_cast({'answered', OldCall}, ObConfReq) ->
     CallId = whapps_call:call_id(OldCall),
     put('callid', CallId),
 
-    %ecallmgr_call_control_sup:start_link(),
-    %{'ok', CtrlPid} = ecallmgr_call_sup:start_control_process(ObConfReq#ob_conf_req.node, CallId, wh_util:rand_hex_binary(16)),
-    %set control_q and consumer_id
-    %CtrlPid = ecallmgr_call_control:control_procs(NewUUID),
-    %lager:debug("jerry -- ecallmgr_call_control pid for this call is ~p~n", [CtrlPid]),
-    %Q = ecallmgr_call_control:queue_name(CtrlPid),
-
     CtrlQ = channel_control_queue(CallId),
     Updaters = [fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end,
                 fun(C) -> whapps_call:set_controller_queue(ObConfReq#ob_conf_req.myq, C) end ],
     Call = lists:foldr(fun(F, C) -> F(C) end, OldCall, Updaters),
 
     lager:debug("jerry -- starting conf_participant(~p)~n", [Call]),
-    whapps_call_command:prompt(<<"conf-welcome">>, Call),
-    {'ok', Srv} = conf_participant_sup:start_participant(Call),
-    conf_participant:set_discovery_event(ObConfReq#ob_conf_req.de, Srv),
-    %conf_participant:consume_call_events(Srv),
-    conf_discovery_req:search_for_conference(
-            whapps_conference:from_conference_doc(ObConfReq#ob_conf_req.conference), 
-            Call, Srv),
+
+
+    spawn(fun() ->
+        whapps_call_command:prompt(<<"conf-welcome">>, Call),
+        {'ok', Srv} = conf_participant_sup:start_participant(Call),
+        conf_participant:set_discovery_event(ObConfReq#ob_conf_req.de, Srv),
+        %conf_participant:consume_call_events(Srv),
+        conf_discovery_req:search_for_conference(
+                whapps_conference:from_conference_doc(ObConfReq#ob_conf_req.conference), 
+                Call, Srv)
+        end),
+
 
     %%FIXME: store Call to calls
     {'noreply', ObConfReq};
@@ -283,7 +281,7 @@ originate_participant(_Type, Number, Srv,
                ,fun(C) -> whapps_call:set_switch_hostname(Host, C) end]
                ,whapps_call:new()),
 
-    Request = props:filter_undefined(           
+    Request = props:filter_undefined(
                  [{<<"Application-Name">>, <<"noop">>}
                  ,{<<"Originate-Immediate">>, 'true'}
                  ,{<<"Msg-ID">>, MsgId}         
