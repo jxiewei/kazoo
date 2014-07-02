@@ -277,9 +277,11 @@ handle_channel_status(JObj, _Props) ->
             Node = wh_json:get_binary_value(<<"node">>, Channel),
             [_, Hostname] = binary:split(Node, <<"@">>),
             lager:debug("channel is on ~s", [Hostname]),
+            [Pid|_] = ecallmgr_call_control:control_procs(CallId),
             Resp =
                 props:filter_undefined(
                   [{<<"Call-ID">>, CallId}
+                   ,{<<"Control-Queue">>, ecallmgr_call_control:queue_name(Pid)}
                    ,{<<"Status">>, <<"active">>}
                    ,{<<"Switch-Hostname">>, Hostname}
                    ,{<<"Switch-Nodename">>, wh_util:to_binary(Node)}
