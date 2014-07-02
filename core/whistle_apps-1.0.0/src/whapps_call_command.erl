@@ -2216,7 +2216,7 @@ send_command(Command, Call) when is_list(Command) ->
                 Pid when is_pid(Pid) -> _ = wh_amqp_channel:consumer_pid(Pid), 'ok';
                 _Else -> 'ok'
             end,
-            Prop = Command ++ [{<<"Call-ID">>, CallId}
+            Prop = Command ++ [{<<"Call-ID">>, CallId}, {<<"Insert-At">>, <<"now">>}
                                | wh_api:default_headers(Q, <<"call">>, <<"command">>, AppName, AppVersion)
                               ],
             wapi_dialplan:publish_command(CtrlQ, props:filter_undefined(Prop));
