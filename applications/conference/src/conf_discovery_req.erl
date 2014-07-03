@@ -10,6 +10,7 @@
 -include("conference.hrl").
 
 -export([handle_req/2]).
+-export([search_for_conference/3]).
 
 -spec handle_req(wh_json:object(), wh_proplist()) -> any().
 handle_req(JObj, _Options) ->
