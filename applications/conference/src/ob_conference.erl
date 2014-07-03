@@ -25,18 +25,16 @@
 -define(CONSUME_OPTIONS, []).
 -define(DEVICES_VIEW, <<"devices/listing_by_owner">>).
 
--record(ob_conf_req, {account_id :: binary()
+-record(ob_conf, {account_id :: binary()
                       ,userid :: binary()
                       ,conferenceid :: binary()
                       ,account :: wh_json:new() %Doc of request account
                       ,user :: wh_json:new() %Doc of request user
                       ,conference :: whapps_conference:conference()
-                      ,myq :: binary()
-                      ,de
-                      ,calls=dict:new()
+                      ,ob_participants
                       ,node=node()
                       ,host
-                      ,server :: pid()
+                      ,server
                      }).
 
 
@@ -50,39 +48,6 @@ start_link(AccountId, UserId, ConferenceId) ->
                                       ,{'consume_options', ?CONSUME_OPTIONS}
                                      ], [AccountId, UserId, ConferenceId]).
 
-channel_answered(UUID) ->
-    case whapps_util:amqp_pool_collect([{<<"Fields">>, [<<"Answered">>]}
-                                        ,{<<"Call-ID">>, UUID}
-                                        |wh_api:default_headers(?APP_NAME, ?APP_VERSION)
-                                       ]
-                                       ,fun wapi_call:publish_query_channels_req/1
-                                       %,fun wapi_call:query_channels_resp_v/1
-                                       ,{'ecallmgr', 'true'}
-                                       ,20000)
-    of
-    {'ok', [Resp|_]} ->
-        {'ok', wh_json:get_value([<<"Channels">>, UUID, <<"Answered">>], Resp)};
-    _R ->
-        lager:debug("jerry -- failed to get channel information ~p", [_R]),
-        {'error'}
-    end.
-
-channel_control_queue(UUID) ->
-    Req = [{<<"Call-ID">>, wh_util:to_binary(UUID)}
-           | wh_api:default_headers(<<"shell">>, <<"0">>)
-          ],
-    case whapps_util:amqp_pool_request(Req
-                                       ,fun wapi_call:publish_channel_status_req/1
-                                       ,fun wapi_call:channel_status_resp_v/1
-                                      )
-    of
-        {'ok', Resp} ->
-            lager:debug("jerry -- channel status ~p~n", [Resp]),
-            wh_json:get_value(<<"Control-Queue">>, Resp);
-        {'error', _E} ->
-            lager:debug("jerry -- failed to get status of '~s': '~p'", [UUID, _E]),
-            'undefined'
-    end.
 
 handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.
@@ -91,148 +56,26 @@ handle_info(_Msg, ObConfReq) ->
     lager:debug("unhandled message: ~p", [_Msg]),
     {'noreply', ObConfReq}.
 
-handle_cast({'init'}, ObConfReq) ->
-    Conference = ObConfReq#ob_conf_req.conference,
+handle_cast('init', ObConf) ->
+    Conference = ObConf#ob_conf.conference,
     Moderators = wh_json:get_value([<<"moderator">>, <<"numbers">>], Conference),
     Members = wh_json:get_value([<<"member">>, <<"numbers">>], Conference),
-    Server = ObConfReq#ob_conf_req.server,
-
-    DE = wh_json:from_list([{<<"Server-ID">>, ObConfReq#ob_conf_req.myq}
-                           ,{<<"Conference-Doc">>, ObConfReq#ob_conf_req.conference}]),
-    S = ObConfReq#ob_conf_req{de=DE},
-
     Props = [{'restrict_to', [<<"CHANNEL_BRIDGE">>]}],
-    gen_listener:add_binding(Server, 'call', Props),
 
-    lists:foreach(fun(Number) -> 
-                spawn(fun() -> originate_participant(moderator, wh_util:to_binary(Number), Server, S) end) end, Moderators),
-    lists:foreach(fun(Number) -> 
-                spawn(fun() -> originate_participant(member, wh_util:to_binary(Number), Server, S) end) end, Members),
+    gen_listener:add_binding(self(), 'call', Props),
+    [gen_listener:cast(self(), {'originate_participant', moderator, wh_util:to_binary(N)}) || N <- Moderators],
+    [gen_listener:cast(self(), {'originate_participant', member, wh_util:to_binary(N)}) || N <- Members],
 
-    {'noreply', S};
+    {'noreply', ObConf};
 
-handle_cast({'originate_success', OID, Call}, ObConfReq) ->
-    Calls = ObConfReq#ob_conf_req.calls,
-    lager:debug("jerry -- originate succeed, add it(oid ~p) to dict", [OID]),
-    {'noreply', ObConfReq#ob_conf_req{calls=dict:store(OID, Call, Calls)}};
-
-handle_cast({'update_callid', OID, CallId}, ObConfReq) ->
-    Calls = ObConfReq#ob_conf_req.calls,
-    case dict:find(OID, ObConfReq#ob_conf_req.calls) of
-    {'ok', Call} ->
-        {'noreply', ObConfReq#ob_conf_req{calls=dict:store(OID, whapps_call:set_call_id(CallId, Call), Calls)}};
-    _ -> {'noreply', ObConfReq}
-    end;
-
-handle_cast({'answered', OldCall}, ObConfReq) ->
-    lager:debug("jerry -- join (call ~p) to conference~n", [OldCall]),
-    CallId = whapps_call:call_id(OldCall),
-    put('callid', CallId),
-
-    CtrlQ = channel_control_queue(CallId),
-    Updaters = [fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end,
-                fun(C) -> whapps_call:set_controller_queue(ObConfReq#ob_conf_req.myq, C) end ],
-    Call = lists:foldr(fun(F, C) -> F(C) end, OldCall, Updaters),
-
-    lager:debug("jerry -- starting conf_participant(~p)~n", [Call]),
-
-
-    spawn(fun() ->
-        whapps_call_command:prompt(<<"conf-welcome">>, Call),
-        {'ok', Srv} = conf_participant_sup:start_participant(Call),
-        conf_participant:set_discovery_event(ObConfReq#ob_conf_req.de, Srv),
-        %conf_participant:consume_call_events(Srv),
-        conf_discovery_req:search_for_conference(
-                whapps_conference:from_conference_doc(ObConfReq#ob_conf_req.conference), 
-                Call, Srv)
-        end),
-
-
-    %%FIXME: store Call to calls
-    {'noreply', ObConfReq};
-
-handle_cast({'channel_destroyed', OID}, ObConfReq) ->
-    Calls = dict:erase(OID, ObConfReq#ob_conf_req.calls),
-    case dict:size(Calls) of
-    0 -> 
-        lager:debug("jerry -- all channels destroyed, destroy conference"),
-        gen_listener:cast(ObConfReq#ob_conf_req.server, {'conference_destroyed'});
-    _ -> 'ok'
-    end,
-    {'noreply', ObConfReq#ob_conf_req{calls=Calls}};
-
-handle_cast({'conference_destroyed'}, ObConfReq) ->
-    {'stop', {'shutdown', 'hangup'}, ObConfReq};
-
-handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
-    {'noreply', State};
-handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
-    gen_listener:cast(State#ob_conf_req.server, {'init'}),
-    {'noreply', State#ob_conf_req{myq=_QueueName}};
-handle_cast(_Cast, State) ->
-    lager:debug("jerry -- unhandled cast: ~p", [_Cast]),
-    {'noreply', State}.
-
-handle_event(JObj, ObConfReq) ->
-    case whapps_util:get_event_type(JObj) of
-        {<<"call_event">>, <<"CHANNEL_BRIDGE">>} ->
-            lager:debug("jerry -- received channel bridge event ~p~n", [JObj]),
-            OID = wh_json:get_value([<<"Custom-Channel-Vars">>, <<"OBConf-Originate-ID">>], JObj),
-            OtherLegCallId = wh_json:get_binary_value(<<"Other-Leg-Call-ID">>, JObj),
-            lager:debug("jerry -- received channel bridge event oid ~p, other_leg_callid ~p~n", [OID, OtherLegCallId]),
-            case dict:find(OID, ObConfReq#ob_conf_req.calls) of
-            {'ok', Call} ->
-                'ok' = gen_listener:cast(ObConfReq#ob_conf_req.server, {'update_callid', OID, OtherLegCallId}),
-                lager:debug("jerry -- call found, ~p", [Call]),
-                {'ok', Answered} = channel_answered(OtherLegCallId),
-                lager:debug("jerry -- channel answered ~p~n", [Answered]),
-                case Answered of
-                'true' ->
-                    Props = [{'callid', OtherLegCallId},{'restrict_to', [<<"CHANNEL_DESTROY">>]}],
-                    gen_listener:add_binding(ObConfReq#ob_conf_req.server, 'call', Props),
-                    'ok' = gen_listener:cast(ObConfReq#ob_conf_req.server, {'answered', whapps_call:set_call_id(OtherLegCallId, Call)}),
-                    {'reply', []};
-                 _ -> 
-                    Props = [{'callid', OtherLegCallId},{'restrict_to', [<<"CHANNEL_ANSWER">>, <<"CHANNEL_DESTROY">>]}],
-                    gen_listener:add_binding(ObConfReq#ob_conf_req.server, 'call', Props),
-                    {'reply', []}
-                end;
-            _ ->
-                lager:debug("OID ~p not found", [OID]),
-                {'reply', []}
-            end;
-        {<<"call_event">>, <<"CHANNEL_ANSWER">>} ->
-            lager:debug("jerry -- received channel answer event ~p~n", [JObj]),
-            CallId = wh_json:get_value(<<"Call-ID">>, JObj),
-            Dict = dict:filter(fun(_, Value) -> whapps_call:call_id(Value) =:= CallId end, ObConfReq#ob_conf_req.calls),
-            [{_, Call}|_] = dict:to_list(Dict),
-            lager:debug("jerry -- call found"),
-            'ok' = gen_listener:cast(ObConfReq#ob_conf_req.server, {'answered', Call}),
-            {'reply', []};
-        {<<"call_event">>, <<"CHANNEL_DESTROY">>} ->
-            lager:debug("jerry -- received channel destroy event ~p~n", [JObj]),
-            CallId = wh_json:get_value(<<"Call-ID">>, JObj),
-            Dict = dict:filter(fun(_, Value) -> whapps_call:call_id(Value) =:= CallId end, ObConfReq#ob_conf_req.calls),
-            [OID|_] = dict:fetch_keys(Dict),
-            lager:debug("jerry -- call found, OID ~p~n", [OID]),
-            
-            gen_listener:cast(ObConfReq#ob_conf_req.server, {'channel_destroyed', OID});
-        {_Else, _Info} ->
-            lager:debug("jerry -- received channel event ~p~n", [JObj]),
-            {'reply', []}
-    end.
-
-terminate(_Reason, _ObConfReq) ->
-    lager:debug("ob_conference execution has been stopped: ~p", [_Reason]).
-
-originate_participant(_Type, Number, Srv,
-                        #ob_conf_req{account_id=AccountId
+handle_cast({'originate_participant', _Type, Number},
+                        #ob_conf{account_id=AccountId
                                 ,account=Account
                                 ,userid=UserId
                                 ,user=User
                                 ,host=Host
                                 ,node=FSNode
-                                }) ->
+                                }=ObConf) ->
 
     AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
     ViewOptions = [{'key', UserId}],
@@ -300,11 +143,60 @@ originate_participant(_Type, Number, Srv,
                 ]),
 
     wapi_resource:publish_originate_req(Request),
-    gen_listener:cast(Srv, {'originate_success', MsgId, Call}).
+    {'ok', Pid} = ob_conf_participant_sup:start_ob_conf_participant(self(), ObConf#ob_conf.conference, MsgId, Call),
+    {'noreply', ObConf#ob_conf{ob_participants=dict:store(MsgId, Pid, ObConf#ob_conf.ob_participants)}};
+
+handle_cast({'channel_destroyed', OID}, ObConf) ->
+    P = ObConf#ob_conf.ob_participants,
+    NP =  dict:erase(OID, P),
+    case dict:size(NP) of
+    0 -> gen_listener:cast(self(), 'conference_destroyed');
+    _ -> 'ok'
+    end,
+    {'noreply', ObConf#ob_conf{ob_participants=NP}};
+
+handle_cast('conference_destroyed', ObConf) ->
+    {'stop', {'shutdown', 'hangup'}, ObConf};
+
+handle_cast({'channel_bridged', JObj}, ObConf) ->
+    OID = wh_json:get_value([<<"Custom-Channel-Vars">>, <<"OBConf-Originate-ID">>], JObj),
+    OtherLegCallId = wh_json:get_binary_value(<<"Other-Leg-Call-ID">>, JObj),
+    lager:debug("jerry -- received channel bridge event oid ~p, other_leg_callid ~p~n", [OID, OtherLegCallId]),
+    case dict:find(OID, ObConf#ob_conf.ob_participants) of
+    {'ok', Pid} ->
+        'ok' = gen_listener:cast(Pid, {'set_callid', OtherLegCallId});
+    _ ->
+        lager:debug("OID ~p not found", [OID])
+    end,
+    {'noreply', ObConf};
+
+handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, ObConf) ->
+    {'noreply', ObConf};
+
+handle_cast({'gen_listener',{'created_queue',_QueueName}}, ObConf) ->
+    gen_listener:cast(self(), 'init'),
+    {'noreply', ObConf};
+
+handle_cast(_Cast, ObConf) ->
+    lager:debug("jerry -- unhandled cast: ~p", [_Cast]),
+    {'noreply', ObConf}.
+
+handle_event(JObj, ObConf) ->
+    case whapps_util:get_event_type(JObj) of
+        {<<"call_event">>, <<"CHANNEL_BRIDGE">>} ->
+            lager:debug("jerry -- received channel bridge event ~p~n", [JObj]),
+            gen_listener:cast(ObConf#ob_conf.server, {'channel_bridged', JObj});
+        {_Else, _Info} ->
+            lager:debug("jerry -- received channel event ~p~n", [JObj])
+    end,
+    {'reply', []}.
+
+terminate(_Reason, _ObConf) ->
+    lager:debug("ob_conference execution has been stopped: ~p", [_Reason]).
 
 
-code_change(_OldVsn, ObConfReq, _Extra) ->
-    {'ok', ObConfReq}.
+code_change(_OldVsn, ObConf, _Extra) ->
+    {'ok', ObConf}.
 
 init([AccountId, UserId, ConferenceId]) ->
     process_flag('trap_exit', 'true'),
@@ -317,12 +209,13 @@ init([AccountId, UserId, ConferenceId]) ->
     N = wh_util:to_binary(node()),
     [_, Host] = binary:split(N, <<"@">>),
     FSNode = wh_util:to_atom(<<"freeswitch@", Host/binary>>, 'true'),
-    {'ok', #ob_conf_req{account_id=AccountId
+    {'ok', #ob_conf{account_id=AccountId
                        ,userid=UserId
                        ,conferenceid=ConferenceId
                        ,account=AccountDoc
                        ,user=UserDoc
                        ,conference=ConferenceDoc
                        ,host=Host
-                       ,node=FSNode
-                       ,server=self()}}.
+                       ,ob_participants=dict:new()
+                       ,server=self()
+                       ,node=FSNode}}.
