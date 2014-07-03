@@ -567,7 +567,6 @@ launch_cf_module(#state{call=Call
                        }=State) ->
     Module = <<"cf_", (wh_json:get_value(<<"module">>, Flow))/binary>>,
     Data = wh_json:get_value(<<"data">>, Flow, wh_json:new()),
-    lager:debug("==jerry== ~p Call ~p~n ~p~n", [Module, Call, Data]),
     {PidRef, Action} = maybe_start_cf_module(Module, Data, Call),
     link(get_pid(PidRef)),
     State#state{cf_module_pid=PidRef
