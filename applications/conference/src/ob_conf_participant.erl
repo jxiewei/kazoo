@@ -131,10 +131,11 @@ handle_cast('channel_answered', State) ->
     {'ok', Srv} = conf_participant_sup:start_participant(NewCall),
     gen_listener:cast(State#state.server, {'conf_participant_started', OID, Srv}),
     conf_participant:set_discovery_event(State#state.de, Srv),
+    Conference = conf_discovery_req:create_conference(State#state.conference, 
+            whapps_call:to_user(Call)),
+    lager:debug("jerry -- searching for conference ~p", [Conference]),
     %conf_participant:consume_call_events(Srv),
-    conf_discovery_req:search_for_conference(
-            whapps_conference:from_conference_doc(State#state.conference),
-            NewCall, Srv),
+    conf_discovery_req:search_for_conference(Conference, NewCall, Srv),
 
     %%FIXME: store Call to calls
     {'noreply', State};

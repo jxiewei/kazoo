@@ -140,6 +140,7 @@ handle_cast({'originate_participant', _Type, Number},
                fun(C) -> whapps_call:set_authorizing_type(<<"device">>, C) end
                ,fun(C) -> whapps_call:set_authorizing_id(DeviceId, C) end
                ,fun(C) -> whapps_call:set_request(<<FromUser/binary, <<"@">>/binary, Realm/binary>>, C) end
+               ,fun(C) -> whapps_call:set_to(<<Number/binary, <<"@">>/binary, Realm/binary>>, C) end
                ,fun(C) -> whapps_call:set_account_db(AccountDb, C) end
                ,fun(C) -> whapps_call:set_account_id(AccountId, C) end
                ,fun(C) -> whapps_call:set_owner_id(UserId, C) end
