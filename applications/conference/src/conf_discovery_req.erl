@@ -11,6 +11,7 @@
 
 -export([handle_req/2]).
 -export([search_for_conference/3]).
+-export([create_conference/2]).
 
 -spec handle_req(wh_json:object(), wh_proplist()) -> any().
 handle_req(JObj, _Options) ->
@@ -320,5 +321,5 @@ create_conference(JObj, Digits) ->
             whapps_conference:set_moderator('true', Conference);
         %% the conference number is ambiguous regarding member: either both have the same number
         %%   or they joined by the discovery event having the conference id
-        _Else -> Conference
+        _Else -> whapps_conference:set_moderator('false', Conference)
     end.
