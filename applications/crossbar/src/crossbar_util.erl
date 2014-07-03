@@ -25,9 +25,14 @@
 -export([response_db_missing/1]).
 -export([response_db_fatal/1]).
 -export([response_auth/1
+         ,response_auth/2
          ,response_auth/3
         ]).
 -export([get_account_realm/1, get_account_realm/2]).
+-export([move_account/2]).
+-export([get_descendants/1]).
+-export([get_tree/1]).
+-export([replicate_account_definition/1]).
 -export([disable_account/1, enable_account/1, change_pvt_enabled/2]).
 -export([get_path/2]).
 -export([get_user_lang/2, get_account_lang/1]).
@@ -36,12 +41,18 @@
 -export([maybe_remove_attachments/1]).
 
 -export([create_auth_token/2]).
+-export([generate_year_month_sequence/2
+         ,generate_year_month_sequence/3
+        ]).
 
 -include("crossbar.hrl").
 
--define(DEFAULT_LANGUAGE, <<"en-US">>).
+-define(DEFAULT_LANGUAGE
+        ,whapps_config:get(?CONFIG_CAT, <<"default_language">>, <<"en-US">>)
+       ).
 
 -type fails() :: 'error' | 'fatal'.
+-type year_month_tuple() :: {pos_integer(),pos_integer()}.
 
 %%--------------------------------------------------------------------
 %% @public
@@ -302,6 +313,182 @@ get_account_realm(Db, AccountId) ->
 %%--------------------------------------------------------------------
 %% @public
 %% @doc
+%% @end
+%%--------------------------------------------------------------------
+-spec move_account(ne_binary(), ne_binary()) -> {'ok', wh_json:object()} | {'error',any()}.
+move_account(AccountId, ToAccount) ->
+    AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
+    case validate_move(AccountId, ToAccount) of
+        {'error', _E}=Error -> Error;
+        {'ok', JObj, ToTree} ->
+            PreviousTree = wh_json:get_value(<<"pvt_tree">>, JObj),
+            JObj1 = wh_json:set_values([{<<"pvt_tree">>, ToTree}
+                                        ,{<<"pvt_previous_tree">>, PreviousTree}
+                                        ,{<<"pvt_modified">>, wh_util:current_tstamp()}
+                                       ], JObj),
+            case couch_mgr:save_doc(AccountDb, JObj1) of
+                {'error', _E}=Error -> Error;
+                {'ok', _} ->
+                    {'ok', _} = replicate_account_definition(JObj1),
+                    {'ok', _} = move_descendants(AccountId, ToTree),
+                    {'ok', _} = mark_dirty(AccountId),
+                    move_service(AccountId, ToTree, 'true')
+            end
+    end.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% @end
+%%--------------------------------------------------------------------
+-spec validate_move(ne_binary(), ne_binary()) -> {'error', _} | {'ok', wh_json:object(), ne_binaries()}.
+validate_move(AccountId, ToAccount) ->
+    AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
+    case couch_mgr:open_doc(AccountDb, AccountId) of
+        {'error', _E}=Error -> Error;
+        {'ok', JObj} ->
+            ToTree = lists:append(crossbar_util:get_tree(ToAccount), [ToAccount]),
+            case lists:member(AccountId, ToTree) of
+                'true' -> {'error', 'forbidden'};
+                'false' -> {'ok', JObj, ToTree}
+            end
+    end.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% @end
+%%--------------------------------------------------------------------
+-spec move_descendants(ne_binary(), ne_binaries()) -> {'ok', wh_json:object()} | {'error',any()}.
+move_descendants(AccountId, Tree) when is_binary(AccountId) ->
+    Descendants = crossbar_util:get_descendants(AccountId),
+    move_descendants(Descendants, Tree);
+move_descendants([], _) -> {'ok', 'done'};
+move_descendants([Descendant|Descendants], Tree) ->
+    AccountId = wh_util:format_account_id(Descendant, 'raw'),
+    AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
+    case couch_mgr:open_doc(AccountDb, AccountId) of
+        {'error', _E}=Error -> Error;
+        {'ok', JObj} ->
+            PreviousTree = wh_json:get_value(<<"pvt_tree">>, JObj),
+            {_, Tail} = lists:split(erlang:length(Tree), PreviousTree),
+            ToTree = Tree ++ Tail,
+            JObj1 = wh_json:set_values([{<<"pvt_tree">>, ToTree}
+                                        ,{<<"pvt_previous_tree">>, PreviousTree}
+                                        ,{<<"pvt_modified">>, wh_util:current_tstamp()}
+                                       ], JObj),
+            case couch_mgr:save_doc(AccountDb, JObj1) of
+                {'error', _E}=Error -> Error;
+                {'ok', _} ->
+                    {'ok', _} = replicate_account_definition(JObj1),
+                    {'ok', _} = move_service(AccountId, ToTree, 'undefined'),
+                    move_descendants(Descendants, ToTree)
+            end
+    end.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% @end
+%%--------------------------------------------------------------------
+-spec move_service(ne_binary(), ne_binaries(), 'undefined' | 'true' | 'false') ->
+                          {'ok', wh_json:object()} | {'error',any()}.
+move_service(AccountId, NewTree, Dirty) ->
+    case couch_mgr:open_doc(?WH_SERVICES_DB, AccountId) of
+        {'error', _E}=Error -> Error;
+        {'ok', JObj} ->
+            PreviousTree = wh_json:get_value(<<"pvt_tree">>, JObj),
+            Props = props:filter_undefined([{<<"pvt_tree">>, NewTree}
+                                            ,{<<"pvt_dirty">>, Dirty}
+                                            ,{<<"pvt_previous_tree">>, PreviousTree}
+                                            ,{<<"pvt_modified">>, wh_util:current_tstamp()}
+                                           ]),
+            JObj1 = wh_json:set_values(Props, JObj),
+            case couch_mgr:save_doc(?WH_SERVICES_DB, JObj1) of
+                {'error', _E}=Error -> Error;
+                {'ok', _R}=Ok -> Ok
+            end
+    end.
+
+%%--------------------------------------------------------------------
+%% @public
+%% @doc
+%% Return all descendants of the account id
+%% @end
+%%--------------------------------------------------------------------
+-spec get_descendants(api_binary()) -> 'ok' | {'error', _}.
+get_descendants('undefined') -> [];
+get_descendants(AccountId) ->
+    ViewOptions = [{<<"startkey">>, [AccountId]}
+                   ,{<<"endkey">>, [AccountId, wh_json:new()]}
+                  ],
+    case couch_mgr:get_results(?WH_ACCOUNTS_DB, <<"accounts/listing_by_descendants">>, ViewOptions) of
+        {'ok', JObjs} ->
+            lists:foldl(
+                fun(JObj, Acc) ->
+                    Id = wh_json:get_value(<<"id">>, JObj),
+                    case Id =:= AccountId of
+                        'true' -> Acc;
+                        'false' -> [Id|Acc]
+                    end
+                end
+                ,[]
+                ,JObjs
+            );
+        {'error', R} ->
+            lager:debug("unable to disable descendants of ~s: ~p", [AccountId, R]),
+            []
+    end.
+
+-spec mark_dirty(ne_binary() | wh_json:object()) -> wh_std_return().
+mark_dirty(AccountId) when is_binary(AccountId) ->
+    case couch_mgr:open_doc(?WH_SERVICES_DB, AccountId) of
+        {'error', _}=E -> E;
+        {'ok', JObj} -> mark_dirty(JObj)
+    end;
+mark_dirty(JObj) ->
+    couch_mgr:save_doc(?WH_SERVICES_DB
+                       ,wh_json:set_values([{<<"pvt_dirty">>, 'true'}
+                                            ,{<<"pvt_modified">>, wh_util:current_tstamp()}
+                                           ], JObj)).
+
+%%--------------------------------------------------------------------
+%% @public
+%% @doc
+%% @end
+%%--------------------------------------------------------------------
+-spec get_tree(ne_binary()) -> ne_binaries().
+get_tree(Account) ->
+    AccountId = wh_util:format_account_id(Account, 'raw'),
+    AccountDb = wh_util:format_account_id(Account, 'encoded'),
+    case couch_mgr:open_cache_doc(AccountDb, AccountId) of
+        {'ok', JObj} -> wh_json:get_value(<<"pvt_tree">>, JObj, []);
+        {'error', _E} ->
+            lager:error("could not load ~s in ~s", [AccountId, AccountDb]),
+            []
+    end.
+
+%%--------------------------------------------------------------------
+%% @public
+%% @doc
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec replicate_account_definition(wh_json:object()) ->
+                                          {'ok', wh_json:object()} |
+                                          {'error', _}.
+replicate_account_definition(JObj) ->
+    AccountId = wh_json:get_value(<<"_id">>, JObj),
+    case couch_mgr:lookup_doc_rev(?WH_ACCOUNTS_DB, AccountId) of
+        {'ok', Rev} ->
+            couch_mgr:ensure_saved(?WH_ACCOUNTS_DB, wh_json:set_value(<<"_rev">>, Rev, JObj));
+        _Else ->
+            couch_mgr:ensure_saved(?WH_ACCOUNTS_DB, wh_json:delete_key(<<"_rev">>, JObj))
+    end.
+
+%%--------------------------------------------------------------------
+%% @public
+%% @doc
 %% Flag all descendants of the account id as disabled
 %% @end
 %%--------------------------------------------------------------------
@@ -347,44 +534,38 @@ enable_account(AccountId) ->
 %% Helper to set data for all auth type
 %% @end
 %%--------------------------------------------------------------------
--spec response_auth(wh_json:object()) -> wh_json:object().
--spec response_auth(wh_json:object(), ne_binary(), ne_binary()) -> wh_json:object().
+-spec response_auth(wh_json:object()) ->
+                           wh_json:object().
+-spec response_auth(wh_json:object(), api_binary()) ->
+                           wh_json:object().
+-spec response_auth(wh_json:object(), api_binary(), api_binary()) ->
+                           wh_json:object().
 response_auth(JObj) ->
-    AccountId = wh_json:get_value(<<"account_id">>, JObj, 'undefined'),
-    OwnerId = wh_json:get_value(<<"owner_id">>, JObj, 'undefined'),
-    ConfId = wh_json:get_value(<<"conference_id">>, JObj, 'undefined'),
-    IsModerator = wh_json:get_value(<<"is_moderator">>, JObj, 'undefined'),
-    Apps = wh_json:get_value(<<"apps">>, JObj, 'undefined'),
-    Lang = wh_json:get_value(<<"language">>, JObj, 'undefined'),
-    AccountName = wh_json:get_value(<<"account_name">>, JObj, 'undefined'),
-    IsReseller = wh_services:is_reseller(AccountId),
-    ResellerId = wh_services:find_reseller_id(AccountId),
-    wh_json:from_list(
-        props:filter_undefined(
-            [{<<"account_id">>, AccountId}
-             ,{<<"owner_id">>, OwnerId}
-             ,{<<"is_reseller">>, IsReseller}
-             ,{<<"reseller_id">>, ResellerId}
-             ,{<<"conference_id">>, ConfId}
-             ,{<<"is_moderator">>, IsModerator}
-             ,{<<"apps">>, Apps}
-             ,{<<"language">>, Lang}
-             ,{<<"account_name">>, AccountName}
-            ]
-        )
-    ).
+    response_auth(JObj
+                  ,wh_json:get_first_defined([<<"account_id">>, <<"pvt_account_id">>], JObj)
+                  ,wh_json:get_first_defined([<<"owner_id">>, <<"user_id">>], JObj)
+                 ).
+
+response_auth(JObj, AccountId) ->
+     UserId  = wh_json:get_value(<<"owner_id">>, JObj),
+     response_auth(JObj, AccountId, UserId).
 
 response_auth(JObj, AccountId, UserId) ->
-    JObj1 = populate_resp(JObj, AccountId, UserId),
-    crossbar_util:response_auth(JObj1).
+    populate_resp(JObj, AccountId, UserId).
 
--spec populate_resp(wh_json:object(), ne_binary(), ne_binary()) -> wh_json:object().
+-spec populate_resp(wh_json:object(), api_binary(), api_binary()) -> wh_json:object().
+populate_resp(JObj, 'undefined', _UserId) -> JObj;
 populate_resp(JObj, AccountId, UserId) ->
-    Routines = [fun(J) -> wh_json:set_value(<<"apps">>, load_apps(AccountId, UserId), J) end
-                ,fun(J) -> wh_json:set_value(<<"language">>, get_language(AccountId, UserId), J) end
-                ,fun(J) -> wh_json:set_value(<<"account_name">>, whapps_util:get_account_name(AccountId), J) end
-               ],
-    lists:foldl(fun(F, J) -> F(J) end, JObj, Routines).
+    wh_json:set_values(
+      props:filter_undefined(
+        [{<<"apps">>, load_apps(AccountId, UserId)}
+         ,{<<"language">>, get_language(AccountId, UserId)}
+         ,{<<"account_name">>, whapps_util:get_account_name(AccountId)}
+         ,{<<"is_reseller">>, wh_services:is_reseller(AccountId)}
+         ,{<<"reseller_id">>, wh_services:find_reseller_id(AccountId)}
+        ])
+      ,JObj
+     ).
 
 -spec load_apps(ne_binary(), ne_binary()) -> api_object().
 load_apps(AccountId, UserId) ->
@@ -421,10 +602,10 @@ filter_apps([JObj|JObjs], Lang, Acc) ->
 
 -spec get_language(ne_binary(), ne_binary()) -> ne_binary().
 get_language(AccountId, UserId) ->
-    case crossbar_util:get_user_lang(AccountId, UserId) of
+    case ?MODULE:get_user_lang(AccountId, UserId) of
         {'ok', Lang} -> Lang;
         'error' ->
-            case crossbar_util:get_account_lang(AccountId) of
+            case ?MODULE:get_account_lang(AccountId) of
                 {'ok', Lang} -> Lang;
                 'error' -> ?DEFAULT_LANGUAGE
             end
@@ -525,25 +706,26 @@ apply_response_map(Context, Map) ->
                  end, RespJObj, Map),
     cb_context:set_resp_data(Context, RespData).
 
--spec get_path(cowboy_req:req(), ne_binary()) -> ne_binary().
-get_path(Req, Relative) ->
-    {RawPath, _} = cowboy_req:path(Req),
-
-    get_path1(RawPath, Relative).
-
-get_path1(RawPath, Relative) ->
+-spec get_path(cowboy_req:req() | ne_binary(), ne_binary()) -> ne_binary().
+get_path(<<_/binary>> = RawPath, Relative) ->
     PathTokensRev = lists:reverse(binary:split(RawPath, <<"/">>, ['global'])),
     UrlTokens = binary:split(Relative, <<"/">>),
 
     wh_util:join_binary(
       lists:reverse(
-        lists:foldl(fun(<<"..">>, []) -> [];
-                       (<<"..">>, [_ | PathTokens]) -> PathTokens;
-                       (<<".">>, PathTokens) -> PathTokens;
-                       (<<>>, PathTokens) -> PathTokens;
-                       (Segment, PathTokens) -> [Segment | PathTokens]
-                    end, PathTokensRev, UrlTokens)
-       ), <<"/">>).
+        lists:foldl(fun get_path_fold/2, PathTokensRev, UrlTokens)
+       ), <<"/">>);
+get_path(Req, Relative) ->
+    {RawPath, _} = cowboy_req:path(Req),
+    get_path(RawPath, Relative).
+
+get_path_fold(Segment, [<<>> | PathTokens]) ->
+    get_path_fold(Segment, PathTokens);
+get_path_fold(<<"..">>, []) -> [];
+get_path_fold(<<"..">>, [_ | PathTokens]) -> PathTokens;
+get_path_fold(<<".">>, PathTokens) -> PathTokens;
+get_path_fold(<<>>, PathTokens) -> PathTokens;
+get_path_fold(Segment, PathTokens) -> [Segment | PathTokens].
 
 -spec maybe_remove_attachments(cb_context:context()) -> cb_context:context().
 maybe_remove_attachments(Context) ->
@@ -564,46 +746,71 @@ create_auth_token(Context, Method) ->
     JObj = cb_context:doc(Context),
     case wh_json:is_empty(JObj) of
         'true' ->
-            crossbar_util:response('error', <<"invalid credentials">>, 401, Context);
+            lager:debug("empty doc, no auth token created"),
+            ?MODULE:response('error', <<"invalid credentials">>, 401, Context);
         'false' ->
             Data = cb_context:req_data(Context),
-            Timestamp = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
+
             AccountId = wh_json:get_value(<<"account_id">>, JObj),
             OwnerId = wh_json:get_value(<<"owner_id">>, JObj),
+
             Token = props:filter_undefined(
-                        [{<<"account_id">>, AccountId}
-                         ,{<<"owner_id">>, OwnerId}
-                         ,{<<"created">>, Timestamp}
-                         ,{<<"as">>, wh_json:get_value(<<"as">>, Data)}
-                         ,{<<"api_key">>, wh_json:get_value(<<"api_key">>, Data)}
-                         ,{<<"restrictions">>, wh_json:get_value(<<"restrictions">>, Data)}
-                         ,{<<"modified">>, Timestamp}
-                         ,{<<"method">>, wh_util:to_binary(Method)}
-                        ]),
+                      [{<<"account_id">>, AccountId}
+                       ,{<<"owner_id">>, OwnerId}
+                       ,{<<"as">>, wh_json:get_value(<<"as">>, Data)}
+                       ,{<<"api_key">>, wh_json:get_value(<<"api_key">>, Data)}
+                       ,{<<"restrictions">>, wh_json:get_value(<<"restrictions">>, Data)}
+                       ,{<<"method">>, wh_util:to_binary(Method)}
+                      ]),
             JObjToken = wh_doc:update_pvt_parameters(wh_json:from_list(Token)
                                                      ,wh_util:format_account_id(AccountId, 'encoded')
-                                                     ,[{'now', Timestamp}
-                                                       ,{'account_id', AccountId}
-                                                      ]),
+                                                     ,Token
+                                                    ),
+
             case couch_mgr:save_doc(?TOKEN_DB, JObjToken) of
                 {'ok', Doc} ->
                     AuthToken = wh_json:get_value(<<"_id">>, Doc),
                     lager:debug("created new local auth token ~s", [AuthToken]),
-                    crossbar_util:response(crossbar_util:response_auth(JObj, AccountId, OwnerId)
-                                           ,cb_context:setters(
-                                                Context
-                                                ,[{fun cb_context:set_auth_token/2, AuthToken}
-                                                  ,{fun cb_context:set_auth_doc/2, Doc}
-                                                 ])
-                                          );
+                    ?MODULE:response(?MODULE:response_auth(JObj, AccountId, OwnerId)
+                                     ,cb_context:setters(
+                                        Context
+                                        ,[{fun cb_context:set_auth_token/2, AuthToken}
+                                          ,{fun cb_context:set_auth_doc/2, Doc}
+                                         ])
+                                    );
                 {'error', R} ->
                     lager:debug("could not create new local auth token, ~p", [R]),
                     cb_context:add_system_error('invalid_credentials', Context)
             end
     end.
 
+-spec generate_year_month_sequence(year_month_tuple(), year_month_tuple(), wh_proplist()) ->
+                                          wh_proplist().
+generate_year_month_sequence(From, To) ->
+    generate_year_month_sequence(From, To, []).
+
+generate_year_month_sequence({Year, Month}, {Year, Month}, Range) ->
+    lists:reverse([{Year, Month} | Range]);
+generate_year_month_sequence({FromYear, 13}, {ToYear, ToMonth}, Range) ->
+    generate_year_month_sequence({FromYear+1, 1}
+                                 ,{ToYear, ToMonth}
+                                 ,Range
+                                );
+generate_year_month_sequence({FromYear, FromMonth}, {ToYear, ToMonth}, Range) ->
+    'true' = (FromYear * 12 + FromMonth) =< (ToYear * 12 + ToMonth),
+    generate_year_month_sequence({FromYear, FromMonth+1}
+                                 ,{ToYear, ToMonth}
+                                 ,[{FromYear, FromMonth} | Range]
+                                ).
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+
+year_month_sequence_test() ->
+    ?assertEqual([{2013, 11}, {2013, 12}, {2014, 1}]
+                 ,generate_year_month_sequence({2013, 11}
+                                               ,{2014, 1}
+                                              )).
 
 get_path_test() ->
     RawPath = <<"/v1/accounts/acct_id/module">>,

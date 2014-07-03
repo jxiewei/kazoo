@@ -17,7 +17,7 @@
          ,resource_exists/0, resource_exists/1, resource_exists/2
          ,validate/1, validate/2, validate/3
          ,put/1, put/2
-         ,post/2
+         ,post/2, post/3
          ,delete/2
         ]).
 
@@ -34,6 +34,7 @@
 -define(AGG_VIEW_PARENT, <<"accounts/listing_by_parent">>).
 -define(AGG_VIEW_CHILDREN, <<"accounts/listing_by_children">>).
 -define(AGG_VIEW_DESCENDANTS, <<"accounts/listing_by_descendants">>).
+
 -define(AGG_VIEW_REALM, <<"accounts/listing_by_realm">>).
 -define(AGG_VIEW_NAME, <<"accounts/listing_by_name">>).
 
@@ -42,9 +43,10 @@
 -define(CHILDREN, <<"children">>).
 -define(DESCENDANTS, <<"descendants">>).
 -define(SIBLINGS, <<"siblings">>).
--define(ANCESTORS, <<"ancestors">>).
+-define(API_KEY, <<"api_key">>).
 
 -define(REMOVE_SPACES, [<<"realm">>]).
+-define(MOVE, <<"move">>).
 
 -spec init() -> 'ok'.
 init() ->
@@ -55,7 +57,6 @@ init() ->
                 ,{<<"*.execute.post.accounts">>, 'post'}
                 ,{<<"*.execute.delete.accounts">>, 'delete'}
                ],
-
     cb_modules_util:bind(?MODULE, Bindings).
 
 %%--------------------------------------------------------------------
@@ -86,8 +87,16 @@ allowed_methods(AccountId) ->
             [?HTTP_GET, ?HTTP_PUT, ?HTTP_POST]
     end.
 
+allowed_methods(_, ?MOVE) ->
+    [?HTTP_POST];
 allowed_methods(_, Path) ->
-    case lists:member(Path, [?ANCESTORS, ?CHILDREN, ?DESCENDANTS,?SIBLINGS, ?CHANNELS]) of
+    Paths =  [?CHILDREN
+              ,?DESCENDANTS
+              ,?SIBLINGS
+              ,?CHANNELS
+              ,?API_KEY
+             ],
+    case lists:member(Path, Paths) of
         'true' -> [?HTTP_GET];
         'false' -> []
     end.
@@ -105,8 +114,15 @@ allowed_methods(_, Path) ->
 -spec resource_exists(path_token(), ne_binary()) -> boolean().
 resource_exists() -> 'true'.
 resource_exists(_) -> 'true'.
+resource_exists(_, ?MOVE) -> 'true';
 resource_exists(_, Path) ->
-    lists:member(Path, [?ANCESTORS, ?CHILDREN, ?DESCENDANTS,?SIBLINGS, ?CHANNELS]).
+    Paths =  [?CHILDREN
+              ,?DESCENDANTS
+              ,?SIBLINGS
+              ,?CHANNELS
+              ,?API_KEY
+             ],
+    lists:member(Path, Paths).
 
 %%--------------------------------------------------------------------
 %% @public
@@ -160,7 +176,33 @@ validate_account_path(Context, AccountId, ?CHILDREN, ?HTTP_GET) ->
 validate_account_path(Context, AccountId, ?DESCENDANTS, ?HTTP_GET) ->
     load_descendants(AccountId, prepare_context('undefined', Context));
 validate_account_path(Context, AccountId, ?SIBLINGS, ?HTTP_GET) ->
-    load_siblings(AccountId, prepare_context('undefined', Context)).
+    load_siblings(AccountId, prepare_context('undefined', Context));
+validate_account_path(Context, AccountId, ?API_KEY, ?HTTP_GET) ->
+    Context1 = crossbar_doc:load(AccountId, prepare_context('undefined', Context)),
+    case cb_context:resp_status(Context1) of
+        'success' ->
+            JObj = cb_context:doc(Context1),
+            ApiKey = wh_json:get_value(<<"pvt_api_key">>, JObj),
+            RespJObj = wh_json:from_list([{<<"api_key">>, ApiKey}]),
+            cb_context:set_resp_data(Context1, RespJObj);
+        _Else -> Context1
+    end;
+validate_account_path(Context, AccountId, ?MOVE, ?HTTP_POST) ->
+    Data = cb_context:req_data(Context),
+    case wh_json:get_binary_value(<<"to">>, Data) of
+        'undefined' ->
+            cb_context:add_validation_error(<<"to">>
+                                            ,<<"required">>
+                                            ,<<"Field 'to' is required">>
+                                            ,Context);
+        ToAccount ->
+            case validate_move(whapps_config:get(?ACCOUNTS_CONFIG_CAT, <<"allow_move">>, <<"superduper_admin">>)
+                               ,Context, AccountId, ToAccount)
+            of
+                'true' -> cb_context:set_resp_status(Context, 'success');
+                'false' -> cb_context:add_system_error('forbidden', [], Context)
+            end
+    end.
 
 %%--------------------------------------------------------------------
 %% @public
@@ -169,9 +211,9 @@ validate_account_path(Context, AccountId, ?SIBLINGS, ?HTTP_GET) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec post(cb_context:context(), path_token()) -> cb_context:context().
+-spec post(cb_context:context(), path_token(), path_token()) -> cb_context:context().
 post(Context, AccountId) ->
     Context1 = crossbar_doc:save(Context),
-
     case cb_context:resp_status(Context1) of
         'success' ->
             _ = provisioner_util:maybe_update_account(Context1),
@@ -182,6 +224,12 @@ post(Context, AccountId) ->
                                            ,leak_pvt_fields(Context1)
                                           );
         _Status -> Context1
+    end.
+
+post(Context, AccountId, ?MOVE) ->
+    case cb_context:resp_status(Context) of
+        'success' -> move_account(Context, AccountId);
+        _Status -> Context
     end.
 
 %%--------------------------------------------------------------------
@@ -230,6 +278,55 @@ delete(Context, Account) ->
         'true' ->
             delete_remove_services(prepare_context(Context, AccountId, AccountDb))
     end.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% @end
+%%--------------------------------------------------------------------
+-spec validate_move(ne_binary(), cb_context:context(), ne_binary(), ne_binary()) -> boolean().
+validate_move(<<"superduper_admin">>, Context, _, _) ->
+    lager:debug("using superduper_admin flag to allow move account"),
+    AuthDoc = cb_context:auth_doc(Context),
+    AuthId = wh_json:get_value(<<"account_id">>, AuthDoc),
+    wh_util:is_system_admin(AuthId);
+validate_move(<<"tree">>, Context, MoveAccount, ToAccount) ->
+    lager:debug("using tree to allow move account"),
+    AuthDoc = cb_context:auth_doc(Context),
+    AuthId = wh_json:get_value(<<"account_id">>, AuthDoc),
+    MoveTree = crossbar_util:get_tree(MoveAccount),
+    ToTree = crossbar_util:get_tree(ToAccount),
+    L = lists:foldl(
+            fun(Id, Acc) ->
+                case lists:member(Id, ToTree) of
+                    'false' -> Acc;
+                    'true' -> [Id|Acc]
+                end
+            end
+            ,[]
+            ,MoveTree
+        ),
+    lists:member(AuthId, L);
+validate_move(_Type, _, _, _) ->
+    lager:error("unknow move type ~p", [_Type]),
+    'false'.
+
+%%--------------------------------------------------------------------
+%% @private
+%% @doc
+%% @end
+%%--------------------------------------------------------------------
+-spec move_account(cb_context:context(), ne_binary()) -> cb_context:context().
+move_account(Context, AccountId) ->
+    Data = cb_context:req_data(Context),
+    ToAccount = wh_json:get_binary_value(<<"to">>, Data),
+    case crossbar_util:move_account(AccountId, ToAccount) of
+        {'error', 'forbidden'} -> cb_context:add_system_error('forbidden', Context);
+        {'error', _E} -> cb_context:add_system_error('datastore_fault', Context);
+        {'ok', _} ->
+            load_account(AccountId, prepare_context(AccountId, Context))
+    end.
+
 
 %%--------------------------------------------------------------------
 %% @private
@@ -471,10 +568,27 @@ leak_pvt_superduper_admin(Context) ->
     RespJObj = cb_context:resp_data(Context),
 
     SuperAdmin = wh_json:is_true(<<"pvt_superduper_admin">>, JObj, 'false'),
-    leak_pvt_created(
+    leak_pvt_api_key(
       cb_context:set_resp_data(Context
                                ,wh_json:set_value(<<"superduper_admin">>, SuperAdmin, RespJObj))
      ).
+
+-spec leak_pvt_api_key(cb_context:context()) -> cb_context:context().
+leak_pvt_api_key(Context) ->
+    QueryString = cb_context:query_string(Context),
+    case wh_json:is_true(<<"include_api_key">>, QueryString, 'false')
+        orelse whapps_config:get_is_true(?ACCOUNTS_CONFIG_CAT, <<"expose_api_key">>, 'false')
+    of
+        'false' -> leak_pvt_created(Context);
+        'true' ->
+            JObj = cb_context:doc(Context),
+            RespJObj = cb_context:resp_data(Context),
+            ApiKey = wh_json:get_value(<<"pvt_api_key">>, JObj),
+            leak_pvt_created(
+              cb_context:set_resp_data(Context
+                                       ,wh_json:set_value(<<"api_key">>, ApiKey, RespJObj))
+             )
+    end.
 
 -spec leak_pvt_created(cb_context:context()) -> cb_context:context().
 leak_pvt_created(Context) ->
@@ -548,9 +662,13 @@ load_children(AccountId, Context, _Version) ->
 
 -spec load_children_v1(ne_binary(), cb_context:context()) -> cb_context:context().
 load_children_v1(AccountId, Context) ->
-    crossbar_doc:load_view(?AGG_VIEW_CHILDREN, [{'startkey', [AccountId]}
-                                                ,{'endkey', [AccountId, wh_json:new()]}
-                                               ], Context, fun normalize_view_results/2).
+    crossbar_doc:load_view(?AGG_VIEW_CHILDREN
+                           ,[{'startkey', [AccountId]}
+                             ,{'endkey', [AccountId, wh_json:new()]}
+                            ]
+                           ,Context
+                           ,fun normalize_view_results/2
+                          ).
 
 -spec load_paginated_children(ne_binary(), cb_context:context()) -> cb_context:context().
 load_paginated_children(AccountId, Context) ->
@@ -596,14 +714,15 @@ load_descendants_v1(AccountId, Context) ->
 -spec load_paginated_descendants(ne_binary(), cb_context:context()) -> cb_context:context().
 load_paginated_descendants(AccountId, Context) ->
     StartKey = crossbar_doc:start_key(Context),
+    lager:debug("account ~s startkey ~s", [AccountId, StartKey]),
     fix_envelope(
       crossbar_doc:load_view(?AGG_VIEW_DESCENDANTS
-                                 ,[{'startkey', start_key(AccountId, StartKey)}
-                                   ,{'endkey', [AccountId, wh_json:new()]}
-                                  ]
-                                 ,Context
-                                 ,fun normalize_view_results/2
-                                )).
+                             ,[{'startkey', start_key(AccountId, StartKey)}
+                               ,{'endkey', [AccountId, wh_json:new()]}
+                              ]
+                             ,Context
+                             ,fun normalize_view_results/2
+                            )).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -638,11 +757,11 @@ load_paginated_siblings(AccountId, Context) ->
     Context1 =
         fix_envelope(
           crossbar_doc:load_view(?AGG_VIEW_PARENT
-                                     ,[{'startkey', AccountId}
-                                       ,{'endkey', AccountId}
-                                      ]
-                                     ,Context
-                                    )),
+                                 ,[{'startkey', AccountId}
+                                   ,{'endkey', AccountId}
+                                  ]
+                                 ,Context
+                                )),
     case cb_context:resp_status(Context1) of
         'success' ->
             load_siblings_results(AccountId, Context1, cb_context:doc(Context1));
@@ -659,20 +778,26 @@ load_siblings_results(AccountId, Context, _) ->
 
 -spec fix_envelope(cb_context:context()) -> cb_context:context().
 fix_envelope(Context) ->
-    Envelope = cb_context:resp_envelope(Context),
-    case wh_json:get_value(<<"start_key">>, Envelope) of
-        [_AccountId, StartKey] ->
-            cb_context:set_resp_envelope(
-              Context
-              ,wh_json:set_value(<<"start_key">>, StartKey, Envelope)
-             );
-        [StartKey|_T] ->
-            cb_context:set_resp_envelope(
-              Context
-              ,wh_json:set_value(<<"start_key">>, StartKey, Envelope)
-             );
-        _StartKey -> Context
-    end.
+    cb_context:set_resp_envelope(
+      Context
+      ,lists:foldl(fun(Key, Env) ->
+                           lager:debug("maybe fixing ~s: ~p", [Key, wh_json:get_value(Key, Env)]),
+                           case fix_start_key(wh_json:get_value(Key, Env)) of
+                               'undefined' -> wh_json:delete_key(Key, Env);
+                               V -> wh_json:set_value(Key, V, Env)
+                           end
+                   end
+                   ,cb_context:resp_envelope(Context)
+                   ,[<<"start_key">>, <<"next_start_key">>]
+                  )).
+
+-spec fix_start_key(api_binary() | list()) -> api_binary().
+fix_start_key('undefined') -> 'undefined';
+fix_start_key(<<_/binary>> = StartKey) -> StartKey;
+fix_start_key([StartKey]) -> StartKey;
+fix_start_key([_AccountId, [_|_]=Keys]) -> lists:last(Keys);
+fix_start_key([_AccountId, StartKey]) -> StartKey;
+fix_start_key([StartKey|_T]) -> StartKey.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -1069,16 +1194,12 @@ delete_mod_dbs(AccountId, Year, Month) ->
     case couch_mgr:db_delete(Db) of
         'true' ->
             lager:debug("removed account mod: ~s", [Db]),
-            {PrevYear, PrevMonth} = prev_year_month(Year, Month),
+            {PrevYear, PrevMonth} = kazoo_modb_util:prev_year_month(Year, Month),
             delete_mod_dbs(AccountId, PrevYear, PrevMonth);
         'false' ->
             lager:debug("failed to delete account mod: ~s", [Db]),
             'true'
     end.
-
--spec prev_year_month(wh_year(), wh_month()) -> {wh_year(), wh_month()}.
-prev_year_month(Year, 1) -> {Year-1, 12};
-prev_year_month(Year, Month) -> {Year, Month-1}.
 
 -spec delete_remove_from_accounts(cb_context:context()) -> cb_context:context().
 delete_remove_from_accounts(Context) ->
@@ -1099,18 +1220,5 @@ delete_remove_from_accounts(Context) ->
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
-
-prev_year_month_test() ->
-    {Year3, Month3} = {1776, 3},
-    {Year2, Month2} = prev_year_month(Year3, Month3),
-    {Year1, Month1} = prev_year_month(Year2, Month2),
-    {Year12, Month12} = prev_year_month(Year1, Month1),
-    {Year11, Month11} = prev_year_month(Year12, Month12),
-
-    ?assertEqual({1776, 3}, {Year3, Month3}),
-    ?assertEqual({1776, 2}, {Year2, Month2}),
-    ?assertEqual({1776, 1}, {Year1, Month1}),
-    ?assertEqual({1775, 12}, {Year12, Month12}),
-    ?assertEqual({1775, 11}, {Year11, Month11}).
 
 -endif.

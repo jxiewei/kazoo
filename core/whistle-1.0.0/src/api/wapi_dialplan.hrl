@@ -132,7 +132,7 @@ terminator_v(T) -> lists:member(T, ?ANY_DIGIT).
                             ,<<"Media-Transfer-Method">>
                             ,<<"Media-Transfer-Destination">>
                            ]).
--define(OPTIONAL_STORE_FAX_HEADERS, [<<"Additional-Headers">>, <<"Insert-At">>]).
+-define(OPTIONAL_STORE_FAX_HEADERS, [<<"Additional-Headers">>, <<"Insert-At">>, <<"Fax-Local-Filename">>]).
 -define(STORE_FAX_VALUES, [{<<"Event-Category">>, <<"call">>}
                            ,{<<"Event-Name">>, <<"command">>}
                            ,{<<"Application-Name">>, <<"store_fax">>}
@@ -179,13 +179,13 @@ terminator_v(T) -> lists:member(T, ?ANY_DIGIT).
 
 -define(METAFLOW_HEADERS, [<<"Call">>]).
 -define(OPTIONAL_METAFLOW_HEADERS, [<<"Numbers">>, <<"Patterns">>
-                                    ,<<"Binding-Key">>, <<"Digit-Timeout">>
+                                    ,<<"Binding-Digit">>, <<"Digit-Timeout">>
                                     ,<<"Endpoint-ID">>, <<"Listen-On">>
                                    ]).
 -define(METAFLOW_VALUES, [{<<"Event-Category">>, <<"call">>}
                           ,{<<"Event-Name">>, <<"command">>}
                           ,{<<"Application-Name">>, <<"metaflow">>}
-                          ,{<<"Binding-Key">>, ?ANY_DIGIT}
+                          ,{<<"Binding-Digit">>, ?ANY_DIGIT}
                           ,{<<"Listen-On">>, [<<"both">>, <<"self">>, <<"peer">>]}
                          ]).
 -define(METAFLOW_TYPES, [{<<"Numbers">>, fun wh_json:is_json_object/1}
@@ -297,6 +297,7 @@ terminator_v(T) -> lists:member(T, ?ANY_DIGIT).
                                     ,<<"Enable-T38-Fax-Request">>
                                     ,<<"Enable-T38-Passthrough">>
                                     ,<<"Enable-T38-Gateway">>
+                                    ,<<"Fax-Local-Filename">>
                                    ]).
 -define(RECV_FAX_VALUES, [{<<"Event-Category">>, <<"call">>}
                           ,{<<"Event-Name">>, <<"command">>}

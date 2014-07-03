@@ -20,6 +20,7 @@
         ]).
 -export([get_account_realm/1, get_account_realm/2]).
 -export([is_account_enabled/1]).
+-export([is_account_expired/1]).
 
 -export([try_load_module/1]).
 -export([shuffle_list/1]).
@@ -157,16 +158,18 @@ change_syslog_log_level(L) ->
 %% @end
 %%--------------------------------------------------------------------
 -type account_format() :: 'unencoded' | 'encoded' | 'raw'.
--spec format_account_id(ne_binaries() | api_binary() | wh_json:object()) -> ne_binary().
--spec format_account_id(ne_binaries() | api_binary() | wh_json:object(), account_format()) -> ne_binary().
--spec format_account_id(ne_binaries() | api_binary(), wh_year(), wh_month()) -> ne_binary().
+-spec format_account_id(ne_binaries() | api_binary() | wh_json:object()) -> api_binary().
+-spec format_account_id(ne_binaries() | api_binary() | wh_json:object(), account_format()) -> api_binary().
+-spec format_account_id(ne_binaries() | api_binary(), wh_year(), wh_month()) -> api_binary().
 
 format_account_id(Doc) -> format_account_id(Doc, 'unencoded').
 
+format_account_id('undefined', _Encoding) -> 'undefined';
 format_account_id(DbName, Timestamp) when is_integer(Timestamp) andalso Timestamp > 0 ->
     {{Year, Month, _}, _} = calendar:gregorian_seconds_to_datetime(Timestamp),
     format_account_id(DbName, Year, Month);
 format_account_id(<<"accounts">>, _) -> <<"accounts">>;
+
 %% unencode the account db name
 format_account_id(<<"account/", _/binary>> = DbName, 'unencoded') ->
     DbName;
@@ -209,7 +212,13 @@ format_account_id(AccountId, 'encoded') when is_binary(AccountId) ->
     to_binary(["account%2F", Id1, Id2, "%2F", Id3, Id4, "%2F", IdRest]);
 format_account_id(AccountId, 'raw') -> AccountId.
 
-format_account_id(AccountId, Year, Month) when is_integer(Year), is_integer(Month) ->
+format_account_id('undefined', _Year, _Month) -> 'undefined';
+format_account_id(AccountId, Year, Month) when not is_integer(Year) ->
+    format_account_id(AccountId, to_integer(Year), Month);
+format_account_id(AccountId, Year, Month) when not is_integer(Month) ->
+    format_account_id(AccountId, Year, to_integer(Month));
+format_account_id(Account, Year, Month) when is_integer(Year), is_integer(Month) ->
+    AccountId = format_account_id(Account, 'raw'),
     <<(format_account_id(AccountId, 'encoded'))/binary
       ,"-"
       ,(to_binary(Year))/binary
@@ -219,8 +228,8 @@ format_account_id(AccountId, Year, Month) when is_integer(Year), is_integer(Mont
 -spec format_account_mod_id(ne_binary()) -> ne_binary().
 -spec format_account_mod_id(ne_binary(), pos_integer() | wh_now()) -> ne_binary().
 -spec format_account_mod_id(ne_binary(), wh_year(), wh_month()) -> ne_binary().
-format_account_mod_id(AccountId) ->
-    format_account_mod_id(AccountId, os:timestamp()).
+format_account_mod_id(Account) ->
+    format_account_mod_id(Account, os:timestamp()).
 
 format_account_mod_id(AccountId, {_,_,_}=Timestamp) ->
     {{Year, Month, _}, _} = calendar:now_to_universal_time(Timestamp),
@@ -232,7 +241,7 @@ format_account_mod_id(AccountId, Timestamp) when is_integer(Timestamp) ->
 format_account_mod_id(AccountId, Year, Month) ->
     format_account_id(AccountId, Year, Month).
 
--spec pad_month(pos_integer()) -> ne_binary().
+-spec pad_month(wh_month()) -> ne_binary().
 pad_month(Month) when Month < 10 ->
     <<"0", (to_binary(Month))/binary>>;
 pad_month(Month) ->
@@ -241,9 +250,10 @@ pad_month(Month) ->
 -spec normalize_account_name(api_binary()) -> api_binary().
 normalize_account_name('undefined') -> 'undefined';
 normalize_account_name(AccountName) ->
-    << <<Char>> || <<Char>> <= wh_util:to_lower_binary(AccountName),
-                   (Char >= $a andalso Char =< $z)
-                       orelse (Char >= $0 andalso Char =< $9)
+    << <<Char>>
+       || <<Char>> <= wh_util:to_lower_binary(AccountName),
+          (Char >= $a andalso Char =< $z)
+              orelse (Char >= $0 andalso Char =< $9)
     >>.
 
 %%--------------------------------------------------------------------
@@ -330,6 +340,22 @@ is_account_enabled(Account) ->
                 andalso wh_json:is_true(<<"enabled">>, JObj, 'true')
 
     end.
+
+-spec is_account_expired(api_binary()) -> boolean().
+is_account_expired('undefined') -> 'false';
+is_account_expired(Account) ->
+    AccountId = wh_util:format_account_id(Account, 'raw'),
+    AccountDb = wh_util:format_account_id(Account, 'encoded'),
+    case couch_mgr:open_cache_doc(AccountDb, AccountId) of
+        {'ok', Doc} ->
+            Now = wh_util:current_tstamp(),
+            Trial = wh_json:get_integer_value(<<"pvt_trial_expires">>, Doc, Now+1),
+            Trial < Now;
+        {'error', R} ->
+            lager:debug("failed to check if expired token auth, ~p", [R]),
+            'false'
+    end.
+
 %%--------------------------------------------------------------------
 %% @public
 %% @doc

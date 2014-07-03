@@ -41,6 +41,7 @@
 -export([receive_fax/1
          ,receive_fax/2
          ,receive_fax/3
+         ,receive_fax/4
          ,b_receive_fax/1
         ]).
 -export([bridge/2, bridge/3, bridge/4, bridge/5, bridge/6, bridge/7]).
@@ -66,7 +67,7 @@
          ,b_record_call/2, b_record_call/3, b_record_call/4, b_record_call/5
         ]).
 -export([store/3, store/4, store/5
-         ,store_fax/2
+         ,store_fax/2, store_fax/3
         ]).
 -export([tones/2]).
 -export([prompt_and_collect_digit/2]).
@@ -344,15 +345,15 @@ audio_macro([{'play', MediaName}|T], Call, Queue) ->
 audio_macro([{'play', MediaName, Terminators}|T], Call, Queue) ->
     audio_macro(T, Call, [play_command(MediaName, Terminators, Call) | Queue]);
 audio_macro([{'prompt', PromptName}|T], Call, Queue) ->
-    audio_macro(T, Call, [play_command(whapps_util:get_prompt(PromptName, Call), ?ANY_DIGIT, Call) | Queue]);
+    audio_macro(T, Call, [play_command(wh_media_util:get_prompt(PromptName, Call), ?ANY_DIGIT, Call) | Queue]);
 audio_macro([{'prompt', PromptName, Lang}|T], Call, Queue) ->
-    audio_macro(T, Call, [play_command(whapps_util:get_prompt(PromptName, Lang, Call), ?ANY_DIGIT, Call) | Queue]);
+    audio_macro(T, Call, [play_command(wh_media_util:get_prompt(PromptName, Lang, Call), ?ANY_DIGIT, Call) | Queue]);
 audio_macro([{'say', Say}|T], Call, Queue) ->
-    audio_macro(T, Call, [say_command(Say, <<"name_spelled">>, <<"pronounced">>, <<"en">>, Call) | Queue]);
+    audio_macro(T, Call, [say_command(Say, <<"name_spelled">>, <<"pronounced">>, whapps_call:language(Call), Call) | Queue]);
 audio_macro([{'say', Say, Type}|T], Call, Queue) ->
-    audio_macro(T, Call, [say_command(Say, Type, <<"pronounced">>, <<"en">>, Call) | Queue]);
+    audio_macro(T, Call, [say_command(Say, Type, <<"pronounced">>, whapps_call:language(Call), Call) | Queue]);
 audio_macro([{'say', Say, Type, Method}|T], Call, Queue) ->
-    audio_macro(T, Call, [say_command(Say, Type, Method, <<"en">>, Call) | Queue]);
+    audio_macro(T, Call, [say_command(Say, Type, Method, whapps_call:language(Call), Call) | Queue]);
 audio_macro([{'say', Say, Type, Method, Language}|T], Call, Queue) ->
     audio_macro(T, Call, [say_command(Say, Type, Method, Language, Call) | Queue]);
 audio_macro([{'tones', Tones}|T], Call, Queue) ->
@@ -561,20 +562,27 @@ b_ring(Call) ->
 -spec receive_fax(boolean() | api_binary()
                  ,boolean() | api_binary()
                  ,whapps_call:call()) -> 'ok'.
+-spec receive_fax(boolean() | api_binary()
+                 ,boolean() | api_binary()
+                 ,api_binary()
+                 ,whapps_call:call()) -> 'ok'.
 -spec b_receive_fax(whapps_call:call()) -> wait_for_fax_ret().
 receive_fax(Call) ->
     receive_fax(get_default_t38_setting(), Call).
 
 receive_fax(DefaultFlag, Call) ->
-    T38Settings = props:filter_undefined(get_inbound_t38_settings(DefaultFlag)),
-    Commands = [{<<"Application-Name">>, <<"receive_fax">>}] ++ T38Settings,
-    send_command(Commands, Call).
+    receive_fax(DefaultFlag, 'undefined', 'undefined', Call).
 
 receive_fax('undefined', 'undefined', Call) ->
-    receive_fax(get_default_t38_setting(), Call);
+    receive_fax(get_default_t38_setting(), 'undefined', 'undefined', Call);
 receive_fax(ResourceFlag, ReceiveFlag, Call) ->
-    T38Settings = props:filter_undefined(get_inbound_t38_settings(ResourceFlag, ReceiveFlag)),
-    Commands = [{<<"Application-Name">>, <<"receive_fax">>}] ++ T38Settings,
+    receive_fax(ResourceFlag, ReceiveFlag, 'undefined', Call).
+
+receive_fax(ResourceFlag, ReceiveFlag, LocalFilename, Call) ->
+    Commands = props:filter_undefined([{<<"Application-Name">>, <<"receive_fax">>}
+                                       ,{<<"Fax-Local-Filename">>, LocalFilename}
+                                       | get_inbound_t38_settings(ResourceFlag, ReceiveFlag)
+                                      ]),
     send_command(Commands, Call).
 
 b_receive_fax(Call) ->
@@ -848,11 +856,15 @@ park(Call) ->
 -spec b_prompt(ne_binary(), whapps_call:call()) -> whapps_api_std_return().
 -spec b_prompt(ne_binary(), ne_binary(), whapps_call:call()) -> whapps_api_std_return().
 
-prompt(Prompt, Call) -> prompt(Prompt, <<"en">>, Call).
-prompt(Prompt, Lang, Call) -> play(whapps_util:get_prompt(Prompt, Lang, Call), Call).
+prompt(Prompt, Call) ->
+    play(wh_media_util:get_prompt(Prompt, Call), Call).
+prompt(Prompt, Lang, Call) ->
+    play(wh_media_util:get_prompt(Prompt, Lang, Call), Call).
 
-b_prompt(Prompt, Call) -> b_prompt(Prompt, <<"en">>, Call).
-b_prompt(Prompt, Lang, Call) -> b_play(whapps_util:get_prompt(Prompt, Lang, Call), Call).
+b_prompt(Prompt, Call) ->
+    b_play(wh_media_util:get_prompt(Prompt, Call), Call).
+b_prompt(Prompt, Lang, Call) ->
+    b_play(wh_media_util:get_prompt(Prompt, Lang, Call), Call).
 
 %%--------------------------------------------------------------------
 %% @public
@@ -944,7 +956,7 @@ b_play(Media, Terminators, Leg, Call) ->
 -spec tts(api_binary(), api_binary(), api_binary(), api_binaries(), api_binary(), whapps_call:call()) -> ne_binary().
 
 tts(SayMe, Call) -> tts(SayMe, <<"female">>, Call).
-tts(SayMe, Voice, Call) -> tts(SayMe, Voice, <<"en-US">>, Call).
+tts(SayMe, Voice, Call) -> tts(SayMe, Voice, whapps_call:language(Call), Call).
 tts(SayMe, Voice, Lang, Call) -> tts(SayMe, Voice, Lang, ?ANY_DIGIT, Call).
 tts(SayMe, Voice, Lang, Terminators, Call) ->
     tts(SayMe, Voice, Lang, Terminators
@@ -974,7 +986,7 @@ tts(SayMe, Voice, Lang, Terminators, Engine, Call) ->
 tts_command(SayMe, Call) ->
     tts_command(SayMe, <<"female">>, Call).
 tts_command(SayMe, Voice, Call) ->
-    tts_command(SayMe, Voice, <<"en-US">>, Call).
+    tts_command(SayMe, Voice, whapps_call:langauge(Call), Call).
 tts_command(SayMe, Voice, Language, Call) ->
     tts_command(SayMe, Voice, Language, ?ANY_DIGIT, Call).
 tts_command(SayMe, Voice, Language, Terminators, Call) ->
@@ -989,7 +1001,7 @@ tts_command(SayMe, Voice, Language, Terminators, Engine, Call) ->
          ,{<<"Text">>, SayMe}
          ,{<<"Terminators">>, tts_terminators(Terminators)}
          ,{<<"Voice">>, tts_voice(Voice)}
-         ,{<<"Language">>, tts_language(Language)}
+         ,{<<"Language">>, tts_language(Language, Call)}
          ,{<<"Engine">>, tts_engine(Engine)}
          ,{<<"Call-ID">>, whapps_call:call_id(Call)}
         ])).
@@ -1000,8 +1012,8 @@ tts_terminators(Terminators) -> Terminators.
 tts_voice('undefined') -> <<"female">>;
 tts_voice(Voice) -> Voice.
 
-tts_language('undefined') -> <<"en-US">>;
-tts_language(Language) -> Language.
+tts_language('undefined', Call) -> whapps_call:language(Call);
+tts_language(Language, _Call) -> Language.
 
 tts_engine('undefined') -> <<"flite">>;
 tts_engine(Engine) -> Engine.
@@ -1170,11 +1182,16 @@ b_store(MediaName, Transfer, Method, Headers, Call) ->
 %%--------------------------------------------------------------------
 -spec store_fax(ne_binary(), whapps_call:call()) -> 'ok'.
 store_fax(URL, Call) ->
-    Command = [{<<"Application-Name">>, <<"store_fax">>}
+    store_fax(URL, 'undefined', Call).
+-spec store_fax(ne_binary(), api_binary(), whapps_call:call()) -> 'ok'.
+store_fax(URL, LocalFile, Call) ->
+
+    Command = props:filter_undefined([{<<"Application-Name">>, <<"store_fax">>}
                ,{<<"Media-Transfer-Method">>, <<"put">>}
                ,{<<"Media-Transfer-Destination">>, URL}
+               ,{<<"Fax-Local-Filename">>, LocalFile}
                ,{<<"Insert-At">>, <<"now">>}
-              ],
+              ]),
     send_command(Command, Call).
 
 -spec b_store_fax(ne_binary(), whapps_call:call()) -> b_store_return().
@@ -1272,7 +1289,7 @@ prompt_and_collect_digits(MinDigits, MaxDigits, Prompt, Tries, Timeout, InvalidP
 prompt_and_collect_digits(MinDigits, MaxDigits, Prompt, Tries, Timeout, InvalidPrompt, Regex, Call) ->
     prompt_and_collect_digits(MinDigits, MaxDigits, Prompt, Tries, Timeout, InvalidPrompt, Regex, [<<"#">>], Call).
 prompt_and_collect_digits(MinDigits, MaxDigits, Prompt, Tries, Timeout, InvalidPrompt, Regex, Terminators, Call) ->
-    play_and_collect_digits(MinDigits, MaxDigits, whapps_util:get_prompt(Prompt, Call), Tries, Timeout, InvalidPrompt, Regex, Terminators, Call).
+    play_and_collect_digits(MinDigits, MaxDigits, wh_media_util:get_prompt(Prompt, Call), Tries, Timeout, InvalidPrompt, Regex, Terminators, Call).
 
 b_prompt_and_collect_digit(Prompt, Call) ->
     b_prompt_and_collect_digits(1, 1, Prompt, Call).
@@ -1293,7 +1310,16 @@ b_prompt_and_collect_digits(_MinDigits, _MaxDigits, _Prompt, 0, _Timeout, Invali
     _ = b_prompt(InvalidPrompt, Call),
     {'ok', <<>>};
 b_prompt_and_collect_digits(MinDigits, MaxDigits, Prompt, Tries, Timeout, InvalidPrompt, Regex, Terminators, Call) ->
-    b_play_and_collect_digits(MinDigits, MaxDigits, whapps_util:get_prompt(Prompt, Call), Tries, Timeout, InvalidPrompt, Regex, Terminators, Call).
+    b_play_and_collect_digits(MinDigits
+                              ,MaxDigits
+                              ,wh_media_util:get_prompt(Prompt, Call)
+                              ,Tries
+                              ,Timeout
+                              ,InvalidPrompt
+                              ,Regex
+                              ,Terminators
+                              ,Call
+                             ).
 
 %%--------------------------------------------------------------------
 %% @public
@@ -1436,15 +1462,9 @@ say(Say, Call) ->
 say(Say, Type, Call) ->
     say(Say, Type, <<"pronounced">>, Call).
 say(Say, Type, Method, Call) ->
-    say(Say, Type, Method, <<"en">>, Call).
+    say(Say, Type, Method, whapps_call:language(Call), Call).
 say(Say, Type, Method, Language, Call) ->
-    Command = props:filter_undefined(
-                [{<<"Application-Name">>, <<"say">>}
-                 ,{<<"Say-Text">>, Say}
-                 ,{<<"Type">>, Type}
-                 ,{<<"Method">>, Method}
-                 ,{<<"Language">>, Language}
-                ]),
+    Command = say_command(Say, Type, Method, Language, Call),
     send_command(Command, Call).
 
 -spec say_command(ne_binary(), whapps_call:call()) -> wh_json:object().
@@ -1456,16 +1476,17 @@ say_command(Say, Call) ->
 say_command(Say, Type, Call) ->
     say_command(Say, Type, <<"pronounced">>, Call).
 say_command(Say, Type, Method, Call) ->
-    say_command(Say, Type, Method, <<"en">>, Call).
+    say_command(Say, Type, Method, whapps_call:language(Call), Call).
 say_command(Say, Type, Method, Language, Call) ->
     wh_json:from_list(
+      props:filter_undefined(
         [{<<"Application-Name">>, <<"say">>}
          ,{<<"Say-Text">>, Say}
          ,{<<"Type">>, say_type(Type)}
          ,{<<"Method">>, say_method(Method)}
-         ,{<<"Language">>, say_language(Language)}
+         ,{<<"Language">>, say_language(Language, Call)}
          ,{<<"Call-ID">>, whapps_call:call_id(Call)}
-        ]).
+        ])).
 
 say_type('undefined') -> <<"name_spelled">>;
 say_type(T) -> T.
@@ -1473,15 +1494,15 @@ say_type(T) -> T.
 say_method('undefined') -> <<"pronounced">>;
 say_method(M) -> M.
 
-say_language('undefined') -> <<"en">>;
-say_language(L) -> L.
+say_language('undefined', Call) -> whapps_call:language(Call);
+say_language(L, _Call) -> L.
 
 b_say(Say, Call) ->
     b_say(Say, <<"name_spelled">>, Call).
 b_say(Say, Type, Call) ->
     b_say(Say, Type, <<"pronounced">>, Call).
 b_say(Say, Type, Method, Call) ->
-    b_say(Say, Type, Method, <<"en">>, Call).
+    b_say(Say, Type, Method, whapps_call:language(Call), Call).
 b_say(Say, Type, Method, Language, Call) ->
     say(Say, Type, Method, Language, Call),
     wait_for_message(Call, <<"say">>, <<"CHANNEL_EXECUTE_COMPLETE">>, <<"call_event">>, 'infinity').
@@ -1706,7 +1727,7 @@ do_collect_digits(#wcc_collect_digits{max_digits=MaxDigits
                     %% if we were given the NoopId of the noop and this is not it, then keep waiting
                     do_collect_digits(Collect);
                 {'decrement'} ->
-                    do_collect_digits(Collect#wcc_collect_digits{after_timeout=whapps_util:decr_timeout(After, Start)});
+                    do_collect_digits(Collect#wcc_collect_digits{after_timeout=wh_util:decr_timeout(After, Start)});
                 {'ok', Digit} ->
                     %% DTMF received, collect and start interdigit timeout
                     Digits =:= <<>> andalso flush(Call),
@@ -1817,7 +1838,7 @@ wait_for_message(Call, Application, Event, Type, Timeout) ->
                 {Type, Event, Application} ->
                     {'ok', JObj};
                 _ ->
-                    wait_for_message(Call, Application, Event, Type, whapps_util:decr_timeout(Timeout, Start))
+                    wait_for_message(Call, Application, Event, Type, wh_util:decr_timeout(Timeout, Start))
             end
     end.
 
@@ -1861,7 +1882,7 @@ wait_for_application(Call, Application, Event, Type, Timeout) ->
                 {Type, Event, Application} ->
                     {'ok', JObj};
                 _ ->
-                    wait_for_application(Call, Application, Event, Type, whapps_util:decr_timeout(Timeout, Start))
+                    wait_for_application(Call, Application, Event, Type, wh_util:decr_timeout(Timeout, Start))
             end
     end.
 
@@ -1905,10 +1926,10 @@ wait_for_headless_application(Application, Event, Type, Timeout) ->
                     {'ok', JObj};
                 _T ->
                     lager:debug("ignore ~p", [_T]),
-                    wait_for_headless_application(Application, Event, Type, whapps_util:decr_timeout(Timeout, Start))
+                    wait_for_headless_application(Application, Event, Type, wh_util:decr_timeout(Timeout, Start))
             end;
         _ ->
-            wait_for_headless_application(Application, Event, Type, whapps_util:decr_timeout(Timeout, Start))
+            wait_for_headless_application(Application, Event, Type, wh_util:decr_timeout(Timeout, Start))
     after
         Timeout -> {'error', 'timeout'}
     end.
@@ -1936,13 +1957,13 @@ wait_for_dtmf(Timeout) ->
                 {<<"call_event">>, <<"DTMF">>} ->
                     {'ok', wh_json:get_value(<<"DTMF-Digit">>, JObj)};
                 _ ->
-                    wait_for_dtmf(whapps_util:decr_timeout(Timeout, Start))
+                    wait_for_dtmf(wh_util:decr_timeout(Timeout, Start))
             end;
         _E ->
             lager:debug("unexpected ~p", [_E]),
             %% dont let the mailbox grow unbounded if
             %%   this process hangs around...
-            wait_for_dtmf(whapps_util:decr_timeout(Timeout, Start))
+            wait_for_dtmf(wh_util:decr_timeout(Timeout, Start))
     after
         Timeout -> {'ok', <<>>}
     end.
@@ -1999,11 +2020,11 @@ wait_for_bridge(Timeout, Fun, Call) ->
                     lager:info("bridge completed with result ~s(~s)", [Disposition, Result]),
                     {Result, JObj};
                 _ ->
-                    wait_for_bridge(whapps_util:decr_timeout(Timeout, Start), Fun, Call)
+                    wait_for_bridge(wh_util:decr_timeout(Timeout, Start), Fun, Call)
             end;
         %% dont let the mailbox grow unbounded if
         %%   this process hangs around...
-        _ -> wait_for_bridge(whapps_util:decr_timeout(Timeout, Start), Fun, Call)
+        _ -> wait_for_bridge(wh_util:decr_timeout(Timeout, Start), Fun, Call)
     after
         Timeout -> {'error', 'timeout'}
     end.
@@ -2143,7 +2164,7 @@ wait_for_application_or_dtmf(Application, Timeout) ->
                 {<<"call_event">>, <<"CHANNEL_EXECUTE_COMPLETE">>, Application} -> {'ok', JObj};
                 {<<"call_event">>, <<"DTMF">>, _} -> {'dtmf', wh_json:get_value(<<"DTMF-Digit">>, JObj)};
                 _ ->
-                    wait_for_application_or_dtmf(Application, whapps_util:decr_timeout(Timeout, Start))
+                    wait_for_application_or_dtmf(Application, wh_util:decr_timeout(Timeout, Start))
             end
     end.
 
@@ -2172,7 +2193,7 @@ wait_for_fax(Timeout) ->
                     %% NOTE:
                     lager:debug("channel hungup but no end of fax, maybe its coming next..."),
                     wait_for_fax(5000);
-                _ -> wait_for_fax(whapps_util:decr_timeout(Timeout, Start))
+                _ -> wait_for_fax(wh_util:decr_timeout(Timeout, Start))
             end
     end.
 
@@ -2230,7 +2251,8 @@ send_command(JObj, Call) -> send_command(wh_json:to_proplist(JObj), Call).
 %% Get the t38 settings for an endpoint based on carrier and device
 %% @end
 %%--------------------------------------------------------------------
--spec get_outbound_t38_settings(boolean(), api_binary() | boolean()) -> wh_proplist().
+-spec get_outbound_t38_settings(boolean(), api_binary() | boolean()) ->
+                                       wh_proplist().
 get_outbound_t38_settings(CarrierFlag, <<"auto">>) ->
     get_outbound_t38_settings(CarrierFlag, 'true');
 get_outbound_t38_settings(CarrierFlag, 'undefined') ->
@@ -2282,8 +2304,8 @@ get_outbound_t38_settings('false') ->
 %%
 %% @end
 %%--------------------------------------------------------------------
-
--spec get_inbound_t38_settings(boolean(), api_binary() | boolean()) -> wh_proplist().
+-spec get_inbound_t38_settings(boolean(), api_binary() | boolean()) ->
+                                      wh_proplist().
 get_inbound_t38_settings(CarrierFlag, <<"auto">>) ->
     get_inbound_t38_settings(CarrierFlag, 'true');
 get_inbound_t38_settings(CarrierFlag, 'undefined') ->
@@ -2325,8 +2347,22 @@ get_inbound_t38_settings('undefined','true') ->
      ,{<<"Enable-T38-Fax-Request">>, 'true'}
      ,{<<"Enable-T38-Passthrough">>, 'undefined'}
      ,{<<"Enable-T38-Gateway">>, <<"self">>}
+    ];
+get_inbound_t38_settings('undefined','false') ->
+    [{<<"Enable-T38-Fax">>, 'false'}
+     ,{<<"Enable-T38-Fax-Request">>, 'false'}
+     ,{<<"Enable-T38-Passthrough">>, 'false'}
+    ];
+get_inbound_t38_settings('undefined','undefined') ->
+    [{<<"Enable-T38-Fax">>, 'false'}
+     ,{<<"Enable-T38-Fax-Request">>, 'false'}
+     ,{<<"Enable-T38-Passthrough">>, 'false'}
+    ];
+get_inbound_t38_settings(_Carrier, _CallerFlag) ->
+    [{<<"Enable-T38-Fax">>, 'false'}
+     ,{<<"Enable-T38-Fax-Request">>, 'false'}
+     ,{<<"Enable-T38-Passthrough">>, 'false'}
     ].
-
 
 -spec get_inbound_t38_settings(boolean()) -> wh_proplist().
 get_inbound_t38_settings('true') ->
@@ -2336,6 +2372,12 @@ get_inbound_t38_settings('true') ->
      ,{<<"Enable-T38-Gateway">>, 'undefined'}
     ];
 get_inbound_t38_settings('false') ->
+    [{<<"Enable-T38-Fax">>, 'undefined'}
+     ,{<<"Enable-T38-Fax-Request">>, 'undefined'}
+     ,{<<"Enable-T38-Passthrough">>, 'undefined'}
+     ,{<<"Enable-T38-Gateway">>, 'undefined'}
+    ];
+get_inbound_t38_settings('undefined') ->
     [{<<"Enable-T38-Fax">>, 'undefined'}
      ,{<<"Enable-T38-Fax-Request">>, 'undefined'}
      ,{<<"Enable-T38-Passthrough">>, 'undefined'}

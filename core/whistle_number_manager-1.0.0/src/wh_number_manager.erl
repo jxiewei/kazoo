@@ -219,6 +219,7 @@ check_account(#number{assigned_to=AssignedTo}=N) ->
         'true' -> {'ok', AssignedTo, number_options(N)}
     end.
 
+-spec number_options(wnm_number()) -> wh_proplist().
 number_options(#number{state=State
                        ,features=Features
                        ,module_name=Module
@@ -247,15 +248,28 @@ should_lookup_cnam(Module) ->
         _E:_R -> 'true'
     end.
 
-should_force_outbound(#number{module_name='wnm_local'}) -> 'true';
-should_force_outbound(#number{state = ?NUMBER_STATE_PORT_IN}) -> 'true';
-should_force_outbound(#number{state = ?NUMBER_STATE_PORT_OUT}) -> 'true';
+-spec should_force_outbound(wnm_number()) -> boolean().
+should_force_outbound(#number{module_name='wnm_local'}) ->
+    whapps_config:get_is_true(?WNM_CONFIG_CAT, <<"force_wnm_local_outbound">>, 'true');
+should_force_outbound(#number{state = ?NUMBER_STATE_PORT_IN}) ->
+    whapps_config:get_is_true(?WNM_CONFIG_CAT, <<"force_port_in_outbound">>, 'true');
+should_force_outbound(#number{state = ?NUMBER_STATE_PORT_OUT}) ->
+    whapps_config:get_is_true(?WNM_CONFIG_CAT, <<"force_port_out_outbound">>, 'true');
 should_force_outbound(#number{number_doc=JObj}) ->
-    wh_json:is_true(<<"force_outbound">>, JObj, 'false').
+    case wh_json:get_ne_value(<<"force_outbound">>, JObj) of
+        'undefined' -> default_force_outbound();
+        ForceOutbound -> wh_util:is_true(ForceOutbound)
+    end.
 
+-spec default_force_outbound() -> boolean().
+default_force_outbound() ->
+    whapps_config:get_is_true(?WNM_CONFIG_CAT, <<"default_force_outbound">>, 'false').
+
+-spec find_early_ringback(wnm_number()) -> api_binary().
 find_early_ringback(#number{number_doc=JObj}) ->
     wh_json:get_ne_value([<<"ringback">>, <<"early">>], JObj).
 
+-spec find_transfer_ringback(wnm_number()) -> api_binary().
 find_transfer_ringback(#number{number_doc=JObj}) ->
     wh_json:get_ne_value([<<"ringback">>, <<"transfer">>], JObj).
 
@@ -562,7 +576,10 @@ reserve_number(Number, AssignTo, AuthBy, PublicFields, DryRun) ->
                          {'ok', wh_json:public_fields(JObj)}
                  end
                ],
-    lists:foldl(fun(F, J) -> catch F(J) end, catch wnm_number:get(Number, PublicFields), Routines).
+    lists:foldl(fun(F, J) -> catch F(J) end
+                ,catch wnm_number:get(Number, PublicFields)
+                ,Routines
+               ).
 
 %%--------------------------------------------------------------------
 %% @public
@@ -617,12 +634,12 @@ assign_number_to_account(Number, AssignTo, AuthBy, PublicFields, DryRun) ->
                              ,services=Services
                              ,activations=ActivationCharges
                             }) ->
-                            {'dry_run', [{'services', Services}
-                                         ,{'activation_charges', ActivationCharges}
-                                        ]};
+                         {'dry_run', [{'services', Services}
+                                      ,{'activation_charges', ActivationCharges}
+                                     ]};
                     (#number{number_doc=JObj}) ->
-                        lager:debug("assign number to account successfully completed"),
-                        {'ok', wh_json:public_fields(JObj)}
+                         lager:debug("assign number to account successfully completed"),
+                         {'ok', wh_json:public_fields(JObj)}
                  end
                ],
     lists:foldl(fun(F, J) -> catch F(J) end, 'ok', Routines).

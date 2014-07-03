@@ -16,6 +16,7 @@
 -export([get_modb/1, get_modb/2, get_modb/3]).
 -export([maybe_archive_modb/1]).
 -export([refresh_views/1]).
+-export([create/1]).
 %%--------------------------------------------------------------------
 %% @public
 %% @doc
@@ -26,14 +27,14 @@
 -spec get_results(ne_binary(), ne_binary(), wh_proplist()) ->
                          {'ok', wh_json:objects()} |
                          {'error', atom()}.
--spec get_results(ne_binary(), ne_binary(), wh_proplist(), integer()) ->
+-spec get_results(ne_binary(), ne_binary(), wh_proplist(), non_neg_integer()) ->
                          {'ok', wh_json:objects()} |
                          {'error', atom()}.
 get_results(Account, View, ViewOptions) ->
     get_results(Account, View, ViewOptions, 3).
 
-get_results(_Account, _View, _ViewOptions, 0) ->
-    {'error', 'retry_exceeded'};
+get_results(_Account, _View, _ViewOptions, Retry) when Retry =< 0 ->
+    {'error', 'retries_exceeded'};
 get_results(Account, View, ViewOptions, Retry) ->
     AccountMODb = get_modb(Account, ViewOptions),
     EncodedMODb = wh_util:format_account_id(AccountMODb, 'encoded'),
@@ -80,6 +81,9 @@ get_results_missing_db(Account, View, ViewOptions, Retry) ->
 -spec open_doc(ne_binary(), ne_binary(), integer(), integer()) ->
                       {'ok', wh_json:object()} |
                       {'error', atom()}.
+open_doc(Account, <<Year:4/binary, Month:2/binary, "-", _/binary>> = DocId) ->
+    AccountMODb = get_modb(Account, wh_util:to_integer(Year), wh_util:to_integer(Month)),
+    couch_open(AccountMODb, DocId);
 open_doc(Account, DocId) ->
     AccountMODb = get_modb(Account),
     couch_open(AccountMODb, DocId).
@@ -100,7 +104,7 @@ couch_open(AccountMODb, DocId) ->
     case couch_mgr:open_doc(EncodedMODb, DocId) of
         {'ok', _}=Ok -> Ok;
         {'error', _E}=Error ->
-            lager:error("fail to opend doc ~p in ~p reason: ~p", [DocId, EncodedMODb, _E]),
+            lager:error("fail to open doc ~p in ~p reason: ~p", [DocId, EncodedMODb, _E]),
             Error
     end.
 
@@ -175,20 +179,10 @@ get_modb(Account, Props) when is_list(Props) ->
              end
      end;
 get_modb(Account, Timestamp) ->
-    {{Year, Month, _}, _} = calendar:gregorian_seconds_to_datetime(Timestamp),
-    AccountId = wh_util:format_account_id(Account, 'raw'),
-    <<AccountId/binary
-      ,"-"
-      ,(wh_util:to_binary(Year))/binary
-      ,(wh_util:pad_month(Month))/binary>>.
+    wh_util:format_account_mod_id(Account, Timestamp).
 
 get_modb(Account, Year, Month) ->
-    AccountId = wh_util:format_account_id(Account, 'raw'),
-    <<AccountId/binary
-      ,"-"
-      ,(wh_util:to_binary(Year))/binary
-      ,(wh_util:pad_month(Month))/binary
-    >>.
+    wh_util:format_account_mod_id(Account, Year, Month).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -204,10 +198,20 @@ maybe_create(<<_:32/binary, "-", Year:4/binary, Month:2/binary>>=AccountMODb) ->
             create(AccountMODb),
             'true';
         _ -> 'false'
-    end.
+    end;
+maybe_create(<<"account/", AccountId/binary>>) ->
+    maybe_create(binary:replace(AccountId, <<"/">>, <<>>, ['global']));
+maybe_create(<<"account%2F", AccountId/binary>>) ->
+    maybe_create(binary:replace(AccountId, <<"%2F">>, <<>>, ['global'])).
 
 -spec create(ne_binary()) -> 'ok'.
 create(AccountMODb) ->
+    EncodedMODb = wh_util:format_account_id(AccountMODb, 'encoded'),
+    do_create(AccountMODb, couch_mgr:db_exists(EncodedMODb)).
+
+-spec do_create(ne_binary(), boolean()) -> 'ok'.
+do_create(_AccountMODb, 'true') -> 'ok';
+do_create(AccountMODb, 'false') ->
     lager:debug("create modb ~p", [AccountMODb]),
     EncodedMODb = wh_util:format_account_id(AccountMODb, 'encoded'),
     _ = couch_mgr:db_create(EncodedMODb),
@@ -257,22 +261,13 @@ maybe_archive_modb(AccountMODb) ->
 
 -spec should_archive(ne_binary(), wh_year(), wh_month()) -> boolean().
 should_archive(AccountMODb, Year, Month) ->
-    case modb_year_month(AccountMODb) of
-        {Year, Month} -> 'false';
-        {ModbYear, ModbMonth} ->
+    case kazoo_modb_util:split_account_mod(AccountMODb) of
+        {_AccountId, Year, Month} -> 'false';
+        {_AccountId, ModbYear, ModbMonth} ->
             Months = (Year * 12) + Month,
             ModbMonths = (ModbYear * 12) + ModbMonth,
             (Months - ModbMonths) > whapps_config:get_integer(?CONFIG_CAT, <<"active_modbs">>, 6)
     end.
-
--spec modb_year_month(ne_binary()) -> {pos_integer(), pos_integer()}.
-modb_year_month(AccountMODb) ->
-    Size = byte_size(AccountMODb),
-    YearPos = {Size - 6, 4},
-    MonthPos = {Size -2, 2},
-    {wh_util:to_integer(binary:part(AccountMODb, YearPos))
-     ,wh_util:to_integer(binary:part(AccountMODb, MonthPos))
-    }.
 
 -spec archive_modb(ne_binary()) -> 'ok'.
 archive_modb(AccountMODb) ->
@@ -334,4 +329,3 @@ archive_modb_docs(File, Docs) ->
 -spec archive_modb_doc(file:io_device(), wh_json:object()) -> 'ok'.
 archive_modb_doc(File, Doc) ->
     'ok' = file:write(File, [wh_json:encode(Doc), $\n]).
-
