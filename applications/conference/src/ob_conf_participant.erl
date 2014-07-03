@@ -116,6 +116,7 @@ handle_cast('channel_answered', State) ->
     Call = State#state.call,
     CtrlQ = State#state.control_q,
     CallId = whapps_call:call_id(Call),
+    OID = State#state.oid,
 
     put('callid', CallId),
     lager:debug("jerry -- join (call ~p) to conference~n", [Call]),
@@ -128,6 +129,7 @@ handle_cast('channel_answered', State) ->
 
     whapps_call_command:prompt(<<"conf-welcome">>, NewCall),
     {'ok', Srv} = conf_participant_sup:start_participant(NewCall),
+    gen_listener:cast(State#state.server, {'conf_participant_started', OID, Srv}),
     conf_participant:set_discovery_event(State#state.de, Srv),
     %conf_participant:consume_call_events(Srv),
     conf_discovery_req:search_for_conference(

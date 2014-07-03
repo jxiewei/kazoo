@@ -35,7 +35,11 @@
 -spec start_link() -> startlink_ret().
 start_link() -> supervisor:start_link({'local', ?SERVER}, ?MODULE, []).
 
-start_ob_conference(AccountId, UserId, ConferenceId) -> supervisor:start_child(?MODULE, [AccountId, UserId, ConferenceId]).
+start_ob_conference(AccountId, UserId, ConferenceId) -> 
+    case supervisor:start_child(?MODULE, [AccountId, UserId, ConferenceId]) of
+    {'ok', Pid} -> {'ok', Pid};
+    _ -> 'error'
+    end.
 
 %%%===================================================================
 %%% Supervisor callbacks

@@ -14,7 +14,7 @@
 
 -export([init/0
          ,allowed_methods/0, allowed_methods/1
-         ,allowed_methods/2
+         ,allowed_methods/2, allowed_methods/3
          ,resource_exists/0, resource_exists/1
          ,resource_exists/2, resource_exists/3
          ,validate/1, validate/2
@@ -30,12 +30,12 @@
 -define(KICKOFF_URL, [{<<"conferences">>, [_, ?KICKOFF_PATH_TOKEN]}
                       ,{?WH_ACCOUNT_DB, [_]}
                      ]).
--define(PICKUP_PATH_TOKEN, <<"pickup">>).
--define(PICKUP_URL, [{<<"conferences">>, [_, ?PICKUP_PATH_TOKEN, _]}
+-define(JOIN_PATH_TOKEN, <<"join">>).
+-define(JOIN_URL, [{<<"conferences">>, [_, ?JOIN_PATH_TOKEN, _]}
                      ,{?WH_ACCOUNT_DB, [_]}
                     ]).
--define(KICKOUT_PATH_TOKEN, <<"kickout">>).
--define(KICKOUT_URL, [{<<"conferences">>, [_, ?KICKOUT_PATH_TOKEN, _]}
+-define(KICK_PATH_TOKEN, <<"kick">>).
+-define(KICK_URL, [{<<"conferences">>, [_, ?KICK_PATH_TOKEN, _]}
                      ,{?WH_ACCOUNT_DB, [_]}
                     ]).
 -define(SUCCESSFUL_HANGUP_CAUSES, [<<"NORMAL_CLEARING">>, <<"ORIGINATOR_CANCEL">>, <<"SUCCESS">>]).
@@ -71,10 +71,10 @@ allowed_methods() ->
 allowed_methods(_) ->
     [?HTTP_GET, ?HTTP_POST, ?HTTP_DELETE].
 allowed_methods(_, ?KICKOFF_PATH_TOKEN) ->
+    [?HTTP_POST].
+allowed_methods(_, ?JOIN_PATH_TOKEN, _) ->
     [?HTTP_POST];
-allowed_methods(_, ?PICKUP_PATH_TOKEN) ->
-    [?HTTP_POST];
-allowed_methods(_, ?KICKOUT_PATH_TOKEN) ->
+allowed_methods(_, ?KICK_PATH_TOKEN, _) ->
     [?HTTP_POST].
 
 %%--------------------------------------------------------------------
@@ -93,9 +93,9 @@ resource_exists(_) ->
     true.
 resource_exists(_, ?KICKOFF_PATH_TOKEN) ->
     true.
-resource_exists(_, ?PICKUP_PATH_TOKEN, _) ->
+resource_exists(_, ?JOIN_PATH_TOKEN, _) ->
     true;
-resource_exists(_, ?KICKOUT_PATH_TOKEN, _) ->
+resource_exists(_, ?KICK_PATH_TOKEN, _) ->
     true.
 
 
@@ -130,19 +130,17 @@ validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN) ->
         _Status -> Context1
     end.
 
-validate(Context, ConferenceId, ?PICKUP_PATH_TOKEN, _Number) ->
-    %TODO: call CalleeNum and bridge it to the conference.
+validate(Context, ConferenceId, ?JOIN_PATH_TOKEN, Number) ->
     Context1 = load_conference(ConferenceId, Context),
     case cb_context:resp_status(Context1) of
-        %'success' -> pickup_conf_participant(ConferenceId, _Number, Context1);
+        'success' -> join_member(ConferenceId, Number, Context1);
         _Status -> Context1
     end;
 
-validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN, _Number) ->
-    %TODO: kick CalleeNum out of the conference.
+validate(Context, ConferenceId, ?KICK_PATH_TOKEN, Number) ->
     Context1 = load_conference(ConferenceId, Context),
     case cb_context:resp_status(Context1) of
-        %'success' -> kickout_conf_participatn(ConferenceId, _Number, Context1);
+        'success' -> kick_member(ConferenceId, Number, Context1);
         _Status -> Context1
     end.
 
@@ -154,9 +152,9 @@ post(Context, _) ->
 post(Context, _, ?KICKOFF_PATH_TOKEN) ->
     Context.
 
-post(Context, _, ?PICKUP_PATH_TOKEN, _) ->
+post(Context, _, ?JOIN_PATH_TOKEN, _) ->
     Context;
-post(Context, _, ?KICKOUT_PATH_TOKEN, _) ->
+post(Context, _, ?KICK_PATH_TOKEN, _) ->
     Context.
 
 -spec put(#cb_context{}) -> #cb_context{}.
@@ -259,7 +257,6 @@ normalize_users_results(JObj, Acc, UserId) ->
 kickoff_conference(Context) ->
     JObj = cb_context:doc(Context),
     AccountId = cb_context:account_id(Context),
-    AccountDb = cb_context:account_db(Context),
 
     {'ok', AuthDoc} = couch_mgr:open_cache_doc(?TOKEN_DB, cb_context:auth_token(Context)),
     UserId = wh_json:get_value(<<"owner_id">>, AuthDoc),
@@ -267,3 +264,13 @@ kickoff_conference(Context) ->
     lager:debug("jerry -- starting ob conference process(~p, ~p, ~p)~n", [AccountId, UserId, wh_json:get_value(<<"_id">>, JObj)]),
     lager:debug("jerry -- ~p~n", [ob_conference_sup:start_ob_conference(AccountId, UserId, wh_json:get_value(<<"_id">>, JObj))]),
     crossbar_util:response_202(<<"processing request">>, Context).
+
+kick_member(ConferenceId, Number, Context) ->
+    ob_conference:kick(ConferenceId, Number),
+    crossbar_util:response_202(<<"processing request">>, Context).
+
+join_member(ConferenceId, Number, Context) ->
+    ob_conference:join(ConferenceId, Number),
+    crossbar_util:response_202(<<"processing request">>, Context).
+
+    

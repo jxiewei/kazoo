@@ -6,7 +6,9 @@
 -include("conference.hrl").
 
 %%API
--export([start_link/3]).
+-export([start_link/3
+        ,kick/2
+        ,join/2]).
 
 %%gen_server callbacks
 -export([init/1
@@ -24,6 +26,8 @@
 -define(QUEUE_OPTIONS, []).
 -define(CONSUME_OPTIONS, []).
 -define(DEVICES_VIEW, <<"devices/listing_by_owner">>).
+
+-record(ob_conf_participant, {pid, number, conf_participant_pid}).
 
 -record(ob_conf, {account_id :: binary()
                       ,userid :: binary()
@@ -49,8 +53,26 @@ start_link(AccountId, UserId, ConferenceId) ->
                                      ], [AccountId, UserId, ConferenceId]).
 
 
-handle_call(_Request, _, P) ->
-    {'reply', {'error', 'unimplemented'}, P}.
+kick(ConferenceId, Number) ->
+    case ob_conferences:get_server(ConferenceId) of 
+    {'ok', Srv} ->
+        lager:debug("jerry -- ob conference is at ~p", [Srv]),
+        gen_listener:call(Srv, {'kick', Number});
+    _ ->
+        lager:debug("jerry -- ob conference server for ~p not found", [ConferenceId]),
+        'error'
+    end.
+
+join(ConferenceId, Number) ->
+    case ob_conferences:get_server(ConferenceId) of
+    {'ok', Srv} ->
+        lager:debug("jerry -- ob conference is at ~p", [Srv]),
+        gen_listener:call(Srv, {'join', Number}),
+        'ok';
+    _ ->
+        lager:debug("jerry -- ob conference server for ~p not found", [ConferenceId]),
+        'error'
+    end.
 
 handle_info(_Msg, ObConfReq) ->
     lager:debug("unhandled message: ~p", [_Msg]),
@@ -65,6 +87,7 @@ handle_cast('init', ObConf) ->
     gen_listener:add_binding(self(), 'call', Props),
     [gen_listener:cast(self(), {'originate_participant', moderator, wh_util:to_binary(N)}) || N <- Moderators],
     [gen_listener:cast(self(), {'originate_participant', member, wh_util:to_binary(N)}) || N <- Members],
+    ob_conferences:register_server(wh_json:get_value(<<"_id">>, Conference), self()),
 
     {'noreply', ObConf};
 
@@ -144,7 +167,16 @@ handle_cast({'originate_participant', _Type, Number},
 
     wapi_resource:publish_originate_req(Request),
     {'ok', Pid} = ob_conf_participant_sup:start_ob_conf_participant(self(), ObConf#ob_conf.conference, MsgId, Call),
-    {'noreply', ObConf#ob_conf{ob_participants=dict:store(MsgId, Pid, ObConf#ob_conf.ob_participants)}};
+    ObParticipant = #ob_conf_participant{pid = Pid, number = Number},
+    {'noreply', ObConf#ob_conf{ob_participants=dict:store(MsgId, ObParticipant, ObConf#ob_conf.ob_participants)}};
+
+
+handle_cast({'conf_participant_started', OID, Pid}, ObConf) ->
+    lager:debug("jerry -- conf_participant for oid ~p started, pid ~p", [OID, Pid]),
+    P = ObConf#ob_conf.ob_participants,
+    {'ok', OP} = dict:find(OID, P),
+    NewOP = OP#ob_conf_participant{conf_participant_pid=Pid},
+    {'noreply', ObConf#ob_conf{ob_participants=dict:store(OID, NewOP, ObConf#ob_conf.ob_participants)}};
 
 handle_cast({'channel_destroyed', OID}, ObConf) ->
     P = ObConf#ob_conf.ob_participants,
@@ -156,6 +188,7 @@ handle_cast({'channel_destroyed', OID}, ObConf) ->
     {'noreply', ObConf#ob_conf{ob_participants=NP}};
 
 handle_cast('conference_destroyed', ObConf) ->
+    ob_conferences:unregister_server(wh_json:get_value(<<"_id">>, ObConf#ob_conf.conference)),
     {'stop', {'shutdown', 'hangup'}, ObConf};
 
 handle_cast({'channel_bridged', JObj}, ObConf) ->
@@ -163,7 +196,7 @@ handle_cast({'channel_bridged', JObj}, ObConf) ->
     OtherLegCallId = wh_json:get_binary_value(<<"Other-Leg-Call-ID">>, JObj),
     lager:debug("jerry -- received channel bridge event oid ~p, other_leg_callid ~p~n", [OID, OtherLegCallId]),
     case dict:find(OID, ObConf#ob_conf.ob_participants) of
-    {'ok', Pid} ->
+    {'ok', #ob_conf_participant{pid=Pid}} ->
         'ok' = gen_listener:cast(Pid, {'set_callid', OtherLegCallId});
     _ ->
         lager:debug("OID ~p not found", [OID])
@@ -180,6 +213,27 @@ handle_cast({'gen_listener',{'created_queue',_QueueName}}, ObConf) ->
 handle_cast(_Cast, ObConf) ->
     lager:debug("jerry -- unhandled cast: ~p", [_Cast]),
     {'noreply', ObConf}.
+
+handle_call({'kick', Number}, _From, ObConf) ->
+    lager:debug("jerry -- kicking ~p out", [Number]),
+    Dict = dict:filter(fun(_, V) -> Number =:= V#ob_conf_participant.number end, ObConf#ob_conf.ob_participants),
+    case dict:size(Dict) of
+    0 -> {'reply', {'error', 'not_found'}, ObConf};
+    _ -> 
+        [{_, OP}|_] = dict:to_list(Dict),
+        Pid = OP#ob_conf_participant.conf_participant_pid,
+        conf_participant:hangup(Pid),
+        {'reply', 'ok', ObConf}
+    end;
+
+handle_call({'join', Number}, _From, ObConf) ->
+    lager:debug("jerry -- joining ~p into confernce", [Number]),
+    gen_listener:cast(self(), {'originate_participant', member, Number}),
+    {'reply', 'ok', ObConf};
+
+handle_call(_Request, _, P) ->
+    {'reply', {'error', 'unimplemented'}, P}.
+
 
 handle_event(JObj, ObConf) ->
     case whapps_util:get_event_type(JObj) of
