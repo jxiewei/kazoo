@@ -442,6 +442,19 @@ get_originate_action(<<"transfer">>, JObj) ->
                             ," XML ", Context, "' inline"
                            ])
     end;
+get_originate_action(<<"tts">>, JObj) ->
+    lager:debug("jerry -- tts data ~p", [JObj]),
+    Data = wh_json:get_value(<<"Application-Data">>, JObj),
+    <<"flite">> = wh_json:get_binary_value(<<"Engine">>, Data, <<"flite">>),
+    list_to_binary(["'m:^:", get_unset_vars(JObj)
+        ,"wait_for_answer^"
+        ,"speak:"
+        ,wh_json:get_value(<<"Engine">>, Data, "flite"), "|"
+        ,ecallmgr_fs_flite:voice(Data), "|"
+        ,wh_json:get_value(<<"Text">>, Data)
+        ,"' inline"
+        ]);
+
 get_originate_action(<<"bridge">>, JObj) ->
     lager:debug("got originate with action bridge"),
     CallId = wh_json:get_binary_value(<<"Existing-Call-ID">>, JObj),

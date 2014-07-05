@@ -12,6 +12,7 @@
          ,update_mwi/2
          ,get_devices_owned_by/2
          ,maybe_originate_quickcall/1
+         ,maybe_originate_ivrcall/1
          ,is_superduper_admin/1
          ,attachment_name/2
          ,bucket_name/1
@@ -87,6 +88,17 @@ maybe_originate_quickcall(Context) ->
             originate_quickcall(Endpoints, Call, default_bleg_cid(Call, Context))
     end.
 
+maybe_originate_ivrcall(Context) ->
+    Call = create_call_from_context(Context),
+    [Number, Realm] = binary:split(whapps_call:request(Call), <<"@">>),
+    Endpoint = [{<<"Invite-Format">>, <<"route">>}
+                ,{<<"Route">>,  <<"loopback/", Number/binary, "/context_2">>}
+                ,{<<"To-DID">>, Number}
+                ,{<<"To-Realm">>, Realm}
+               ],
+    originate_ivrcall([wh_json:from_list(Endpoint)], Call, default_bleg_cid(Call, Context)).
+    
+
 -spec create_call_from_context(cb_context:context()) -> whapps_call:call().
 create_call_from_context(Context) ->
     Routines = [fun(C) -> whapps_call:set_account_db(cb_context:account_db(Context), C) end
@@ -118,6 +130,13 @@ request_specific_extraction_funs_from_nouns(?USERS_QCALL_NOUNS) ->
      ,fun(C) -> whapps_call:set_request(<<_Number/binary, "@userquickcall">>, C) end
      ,fun(C) -> whapps_call:set_to(<<_Number/binary, "@userquickcall">>, C) end
     ];
+request_specific_extraction_funs_from_nouns(?USERS_IVRCALL_NOUNS) ->
+    [fun(C) -> whapps_call:set_authorizing_id(_UserId, C) end
+     ,fun(C) -> whapps_call:set_authorizing_type(<<"user">>, C) end
+     ,fun(C) -> whapps_call:set_request(<<_Number/binary, "@userivrcall">>, C) end
+     ,fun(C) -> whapps_call:set_to(<<_Number/binary, "@userivrcall">>, C) end
+    ];
+
 request_specific_extraction_funs_from_nouns(_ReqNouns) ->
     [].
 
@@ -199,6 +218,40 @@ originate_quickcall(Endpoints, Call, Context) ->
               ],
     wapi_resource:publish_originate_req(props:filter_undefined(Request)),
     crossbar_util:response_202(<<"processing request">>, cb_context:set_resp_data(Context, Request)).
+
+originate_ivrcall(Endpoints, Call, Context) ->
+    CCVs = [{<<"Account-ID">>, cb_context:account_id(Context)}
+            ,{<<"Retain-CID">>, <<"true">>}
+            ,{<<"Inherit-Codec">>, <<"false">>}
+            ,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
+            ,{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
+           ],
+    MsgId = case wh_util:is_empty(cb_context:req_id(Context)) of
+                'true' -> wh_util:rand_hex_binary(16);
+                'false' -> cb_context:req_id(Context)
+            end,
+    Data = cb_context:req_data(Context),
+    Request = [{<<"Application-Name">>, <<"tts">>}
+               ,{<<"Application-Data">>, Data}
+               ,{<<"Originate-Immediate">>, true}
+               ,{<<"Msg-ID">>, MsgId}
+               ,{<<"Endpoints">>, maybe_auto_answer(Endpoints)}
+               ,{<<"Timeout">>, get_timeout(Context)}
+               ,{<<"Ignore-Early-Media">>, get_ignore_early_media(Context)}
+               ,{<<"Media">>, get_media(Context)}
+               ,{<<"Outbound-Caller-ID-Name">>, get_caller_id_name(Context)}
+               ,{<<"Outbound-Caller-ID-Number">>, get_caller_id_name(Context)}
+               ,{<<"Outbound-Callee-ID-Name">>, get_caller_id_name(Context)}
+               ,{<<"Outbound-Callee-ID-Number">>, get_caller_id_number(Context)}
+               ,{<<"Dial-Endpoint-Method">>, <<"simultaneous">>}
+               ,{<<"Continue-On-Fail">>, 'false'}
+               ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
+               ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>, <<"Authorizing-ID">>, <<"Authorizing-Type">>]}
+               | wh_api:default_headers(<<>>, <<"resource">>, <<"originate_req">>, ?APP_NAME, ?APP_VERSION)
+              ],
+    wapi_resource:publish_originate_req(props:filter_undefined(Request)),
+    crossbar_util:response_202(<<"processing request">>, cb_context:set_resp_data(Context, Request)).
+
 
 -spec maybe_auto_answer(wh_json:objects()) -> wh_json:objects().
 maybe_auto_answer([Endpoint]) ->

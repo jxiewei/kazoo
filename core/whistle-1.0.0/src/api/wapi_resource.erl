@@ -88,8 +88,7 @@
                                ,{<<"Dial-Endpoint-Method">>, [<<"single">>, <<"simultaneous">>]}
                                ,{<<"Media">>, [<<"process">>, <<"bypass">>, <<"auto">>]}
                                ,{<<"Application-Name">>, [<<"park">>, <<"bridge">>, <<"transfer">>
-                                                          ,<<"fax">>, <<"eavesdrop">>
-                                                         ]}
+                                                         ,<<"fax">>, <<"eavesdrop">>, <<"tts">>]}
                                %% Eavesdrop
                                ,?EAVESDROP_MODE
                               ]).
