@@ -49,10 +49,10 @@
 -define(CONFERENCE_KICKOFF_NOUNS, [{<<"conferences">>, [_ConferenceId, <<"kickoff">>]}
                                    ,{?WH_ACCOUNTS_DB, [_]}
                                   ]).
--define(CONFERENCE_PICKUP_NOUNS, [{<<"conferneces">>, [_ConferenceId, <<"pickup">>, _Number]}
+-define(CONFERENCE_JOIN_NOUNS, [{<<"conferneces">>, [_ConferenceId, <<"join">>, _Number]}
                                   ,{?WH_ACCOUNTS_DB, [_]}
                                  ]).
--define(CONFERENCE_KICKOUT_NOUNS, [{<<"conferneces">>, [_ConferenceId, <<"kickout">>, _Number]}
+-define(CONFERENCE_KICK_NOUNS, [{<<"conferneces">>, [_ConferenceId, <<"kick">>, _Number]}
                                   ,{?WH_ACCOUNTS_DB, [_]}
                                  ]).
 
