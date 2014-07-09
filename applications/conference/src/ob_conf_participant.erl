@@ -62,7 +62,7 @@ channel_answered(UUID) ->
     {'ok', [Resp|_]} ->
         {'ok', wh_json:get_value([<<"Channels">>, UUID, <<"Answered">>], Resp)};
     _R ->
-        lager:debug("jerry -- failed to get channel information ~p", [_R]),
+        lager:notice("failed to get channel information ~p", [_R]),
         {'error'}
     end.
 
@@ -78,25 +78,25 @@ channel_control_queue(UUID) ->
                                       )
     of
         {'ok', Resp} ->
-            lager:debug("jerry -- channel status ~p~n", [Resp]),
+            lager:debug("channel status ~p", [Resp]),
             wh_json:get_value(<<"Control-Queue">>, Resp);
         {'error', _E} ->
-            lager:debug("jerry -- failed to get status of '~s': '~p'", [UUID, _E]),
+            lager:error("failed to get channel status of '~s': '~p'", [UUID, _E]),
             'undefined'
     end.
 
 
 handle_cast({'set_callid', CallId}, State) ->
-    lager:debug("jerry -- received set_callid message(callid ~p)", [CallId]),
+    lager:debug("received set_callid message(callid ~p)", [CallId]),
     Call = State#state.call,
 
     CtrlQ = channel_control_queue(CallId),
     {'ok', Answered} = channel_answered(CallId),
-    lager:debug("jerry -- control queue is ~p, answer state is ~p", [CtrlQ, Answered]),
+    lager:debug("control queue is ~p, answer state is ~p", [CtrlQ, Answered]),
 
     case CtrlQ of
     'undefined' ->
-        lager:debug("jerry -- channel doesn't exist"),
+        lager:info("channel doesn't exist"),
         gen_listener:cast(self(), 'channel_destroyed');
     _ -> 'ok'
     end,
@@ -119,21 +119,20 @@ handle_cast('channel_answered', State) ->
     OID = State#state.oid,
 
     put('callid', CallId),
-    lager:debug("jerry -- join (call ~p) to conference~n", [Call]),
+    lager:info("join call(~p) to conference", [CallId]),
 
     Updaters = [fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end,
                 fun(C) -> whapps_call:set_controller_queue(State#state.myq, C) end ],
     NewCall = lists:foldr(fun(F, C) -> F(C) end, Call, Updaters),
 
-    lager:debug("jerry -- starting conf_participant(~p)~n", [NewCall]),
-
+    lager:debug("starting conf_participant"),
     whapps_call_command:prompt(<<"conf-welcome">>, NewCall),
     {'ok', Srv} = conf_participant_sup:start_participant(NewCall),
     gen_listener:cast(State#state.server, {'conf_participant_started', OID, Srv}),
     conf_participant:set_discovery_event(State#state.de, Srv),
     Conference = conf_discovery_req:create_conference(State#state.conference, 
             whapps_call:to_user(Call)),
-    lager:debug("jerry -- searching for conference ~p", [Conference]),
+    lager:debug("searching for conference"),
     %conf_participant:consume_call_events(Srv),
     conf_discovery_req:search_for_conference(Conference, NewCall, Srv),
 
@@ -141,7 +140,7 @@ handle_cast('channel_answered', State) ->
     {'noreply', State};
 
 handle_cast('channel_destroyed', State) ->
-    lager:debug("jerry -- channel destroyed, terminating"),
+    lager:info("channel destroyed, terminating"),
     gen_listener:cast(State#state.server, {'channel_destroyed', State#state.oid}),
     {'stop', {'shutdown', 'hangup'}, State};
 
@@ -154,30 +153,28 @@ handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
     {'noreply', State#state{myq=_QueueName, de=DE}};
 
 handle_cast(_Cast, State) ->
-    lager:debug("jerry -- unhandled cast: ~p", [_Cast]),
+    lager:debug("unhandled cast: ~p", [_Cast]),
     {'noreply', State}.
 
 handle_event(JObj, State) ->
     case whapps_util:get_event_type(JObj)  of
     {<<"call_event">>, <<"CHANNEL_ANSWER">>} ->
-            lager:debug("jerry -- received channel answer event ~p~n", [JObj]),
+            lager:debug("received channel answer event"),
             CallId = wh_json:get_value(<<"Call-ID">>, JObj),
             'true' = (CallId =:= whapps_call:call_id(State#state.call)),
-            lager:debug("jerry -- call found"),
             'ok' = gen_listener:cast(State#state.self, 'channel_answered');
     {<<"call_event">>, <<"CHANNEL_DESTROY">>} ->
-            lager:debug("jerry -- received channel destroy event ~p~n", [JObj]),
+            lager:debug("received channel destroy event"), 
             CallId = wh_json:get_value(<<"Call-ID">>, JObj),
             'true' = (CallId =:= whapps_call:call_id(State#state.call)),
-            lager:debug("jerry -- call found"),
             gen_listener:cast(State#state.self, 'channel_destroyed');
     {_Else, _Info} ->
-            lager:debug("jerry -- received channel event ~p~n", [JObj])
+            lager:debug("received unknown channel event")
     end,
     {'reply', []}.
 
 terminate(_Reason, _State) ->
-    lager:debug("ob_conference execution has been stopped: ~p", [_Reason]).
+    lager:info("ob_conference execution has been stopped: ~p", [_Reason]).
 
 code_change(_OldVsn, State, _Extra) ->
     {'ok', State}.

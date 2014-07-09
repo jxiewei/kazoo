@@ -30,7 +30,6 @@
 
 start_link() ->
     Bindings = [{'self', []}],
-    lager:debug("jerry -- starting ob_conferences"),
     gen_listener:start_link(?MODULE, [{'responders', ?RESPONDERS}
                                       ,{'bindings', Bindings}
                                       ,{'queue_name', ?QUEUE_NAME}
@@ -57,11 +56,11 @@ handle_info(_Msg, State) ->
     {'noreply', State}.
 
 handle_cast({'register_server', ConferenceId, Srv}, State) ->
-    lager:debug("jerry -- register ob conference server(~p, ~p)", [ConferenceId, Srv]),
+    lager:info("register ob conference server(~p, ~p)", [ConferenceId, Srv]),
     {'noreply', dict:store(ConferenceId, Srv, State)};
 
 handle_cast({'unregister_server', ConferenceId}, State) ->
-    lager:debug("jerry -- unregister ob conference server(~p)", [ConferenceId]),
+    lager:info("unregister ob conference server(~p)", [ConferenceId]),
     {'noreply', dict:erase(ConferenceId, State)};
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
@@ -71,7 +70,7 @@ handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
     {'noreply', State};
 
 handle_cast(_Cast, State) ->
-    lager:debug("jerry -- unhandled cast: ~p", [_Cast]),
+    lager:debug("unhandled cast: ~p", [_Cast]),
     {'noreply', State}.
 
 handle_call({'get_server', ConferenceId}, _From, State) ->
@@ -88,7 +87,7 @@ handle_event(_JObj, _State) ->
     {'reply', []}.
 
 terminate(_Reason, _State) ->
-    lager:debug("ob_conferences execution has been stopped: ~p", [_Reason]).
+    lager:info("ob_conferences execution has been stopped: ~p", [_Reason]).
 
 
 code_change(_OldVsn, State, _Extra) ->

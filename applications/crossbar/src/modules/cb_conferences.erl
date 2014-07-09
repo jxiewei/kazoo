@@ -261,8 +261,8 @@ kickoff_conference(Context) ->
     {'ok', AuthDoc} = couch_mgr:open_cache_doc(?TOKEN_DB, cb_context:auth_token(Context)),
     UserId = wh_json:get_value(<<"owner_id">>, AuthDoc),
 
-    lager:debug("jerry -- starting ob conference process(~p, ~p, ~p)~n", [AccountId, UserId, wh_json:get_value(<<"_id">>, JObj)]),
-    lager:debug("jerry -- ~p~n", [ob_conference_sup:start_ob_conference(AccountId, UserId, wh_json:get_value(<<"_id">>, JObj))]),
+    Pid = ob_conference_sup:start_ob_conference(AccountId, UserId, wh_json:get_value(<<"_id">>, JObj)),
+    lager:info("ob_conference process started, pid ~p", [Pid]),
     crossbar_util:response_202(<<"processing request">>, Context).
 
 kick_member(ConferenceId, Number, Context) ->
