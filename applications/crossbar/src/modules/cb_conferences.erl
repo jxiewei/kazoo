@@ -30,6 +30,10 @@
 -define(KICKOFF_URL, [{<<"conferences">>, [_, ?KICKOFF_PATH_TOKEN]}
                       ,{?WH_ACCOUNT_DB, [_]}
                      ]).
+-define(END_PATH_TOKEN, <<"end">>).
+-define(END_URL, [{<<"conferences">>, [_, ?END_PATH_TOKEN]}
+                  ,{?WH_ACCOUNT_DB, [_]}
+                 ]).
 -define(JOIN_PATH_TOKEN, <<"join">>).
 -define(JOIN_URL, [{<<"conferences">>, [_, ?JOIN_PATH_TOKEN, _]}
                      ,{?WH_ACCOUNT_DB, [_]}
@@ -71,6 +75,8 @@ allowed_methods() ->
 allowed_methods(_) ->
     [?HTTP_GET, ?HTTP_POST, ?HTTP_DELETE].
 allowed_methods(_, ?KICKOFF_PATH_TOKEN) ->
+    [?HTTP_POST];
+allowed_methods(_, ?END_PATH_TOKEN) ->
     [?HTTP_POST].
 allowed_methods(_, ?JOIN_PATH_TOKEN, _) ->
     [?HTTP_POST];
@@ -92,6 +98,8 @@ resource_exists() ->
 resource_exists(_) ->
     true.
 resource_exists(_, ?KICKOFF_PATH_TOKEN) ->
+    true;
+resource_exists(_, ?END_PATH_TOKEN) ->
     true.
 resource_exists(_, ?JOIN_PATH_TOKEN, _) ->
     true;
@@ -127,6 +135,14 @@ validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN) ->
     Context1 = load_conference(ConferenceId, Context),
     case cb_context:resp_status(Context1) of
         'success' -> kickoff_conference(Context1);
+        _Status -> Context1
+    end;
+
+validate(Context, ConferenceId, ?END_PATH_TOKEN) ->
+    %TODO: call conference members/moderators and bridge them to the conference.
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> end_conference(Context1);
         _Status -> Context1
     end.
 
@@ -261,8 +277,13 @@ kickoff_conference(Context) ->
     {'ok', AuthDoc} = couch_mgr:open_cache_doc(?TOKEN_DB, cb_context:auth_token(Context)),
     UserId = wh_json:get_value(<<"owner_id">>, AuthDoc),
 
-    Pid = ob_conference_sup:start_ob_conference(AccountId, UserId, wh_json:get_value(<<"_id">>, JObj)),
+    Pid = ob_conference:kickoff(AccountId, UserId, wh_json:get_value(<<"_id">>, JObj)),
     lager:info("ob_conference process started, pid ~p", [Pid]),
+    crossbar_util:response_202(<<"processing request">>, Context).
+
+end_conference(Context) ->
+    JObj = cb_context:doc(Context),
+    'ok' = ob_conference:kick(wh_json:get_value(<<"_id">>, JObj)),
     crossbar_util:response_202(<<"processing request">>, Context).
 
 kick_member(ConferenceId, Number, Context) ->

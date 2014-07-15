@@ -7,7 +7,8 @@
 
 %%API
 -export([start_link/3
-        ,kick/2
+        ,kickoff/3
+        ,kick/2, kick/1
         ,join/2]).
 
 %%gen_server callbacks
@@ -34,7 +35,7 @@
                       ,conferenceid :: binary()
                       ,account :: wh_json:new() %Doc of request account
                       ,user :: wh_json:new() %Doc of request user
-                      ,conference :: whapps_conference:conference()
+                      ,conference :: wh_json:new()
                       ,ob_participants
                       ,node=node()
                       ,host
@@ -51,11 +52,23 @@ start_link(AccountId, UserId, ConferenceId) ->
                                       ,{'consume_options', ?CONSUME_OPTIONS}
                                      ], [AccountId, UserId, ConferenceId]).
 
+kickoff(AccountId, UserId, ConferenceId) ->
+    ob_conference_sup:start_ob_conference(AccountId, UserId, ConferenceId).
 
 kick(ConferenceId, Number) ->
     case ob_conferences:get_server(ConferenceId) of 
     {'ok', Srv} ->
         gen_listener:call(Srv, {'kick', Number});
+    _ ->
+        lager:info("ob_conference server for ~p not found", [ConferenceId]),
+        'error'
+    end.
+
+kick(ConferenceId) ->
+    case ob_conferences:get_server(ConferenceId) of 
+    {'ok', Srv} ->
+        lager:info("ob_conference found, pid ~p, kicking it", [Srv]),
+        gen_listener:call(Srv, {'kick'});
     _ ->
         lager:info("ob_conference server for ~p not found", [ConferenceId]),
         'error'
@@ -222,6 +235,17 @@ handle_call({'kick', Number}, _From, ObConf) ->
         conf_participant:hangup(Pid),
         {'reply', 'ok', ObConf}
     end;
+
+handle_call({'kick'}, _From, ObConf) ->
+    lager:debug("ending conference"),
+    lists:foreach(
+            fun({_, OP}) -> 
+                Pid = OP#ob_conf_participant.conf_participant_pid,
+                conf_participant:hangup(Pid)
+            end,
+            dict:to_list(ObConf#ob_conf.ob_participants)),
+    {'reply', 'ok', ObConf};
+
 
 handle_call({'join', Number}, _From, ObConf) ->
     lager:debug("joining ~p into confernce", [Number]),
