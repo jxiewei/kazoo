@@ -34,6 +34,10 @@
 -define(END_URL, [{<<"conferences">>, [_, ?END_PATH_TOKEN]}
                   ,{?WH_ACCOUNT_DB, [_]}
                  ]).
+-define(STATUS_PATH_TOKEN, <<"status">>).
+-define(STATUS_URL, [{<<"conferences">>, [_, ?STATUS_PATH_TOKEN]}
+                  ,{?WH_ACCOUNT_DB, [_]}
+                 ]).
 -define(JOIN_PATH_TOKEN, <<"join">>).
 -define(JOIN_URL, [{<<"conferences">>, [_, ?JOIN_PATH_TOKEN, _]}
                      ,{?WH_ACCOUNT_DB, [_]}
@@ -77,7 +81,9 @@ allowed_methods(_) ->
 allowed_methods(_, ?KICKOFF_PATH_TOKEN) ->
     [?HTTP_POST];
 allowed_methods(_, ?END_PATH_TOKEN) ->
-    [?HTTP_POST].
+    [?HTTP_POST];
+allowed_methods(_, ?STATUS_PATH_TOKEN) ->
+    [?HTTP_GET].
 allowed_methods(_, ?JOIN_PATH_TOKEN, _) ->
     [?HTTP_POST];
 allowed_methods(_, ?KICK_PATH_TOKEN, _) ->
@@ -100,6 +106,8 @@ resource_exists(_) ->
 resource_exists(_, ?KICKOFF_PATH_TOKEN) ->
     true;
 resource_exists(_, ?END_PATH_TOKEN) ->
+    true;
+resource_exists(_, ?STATUS_PATH_TOKEN) ->
     true.
 resource_exists(_, ?JOIN_PATH_TOKEN, _) ->
     true;
@@ -131,7 +139,6 @@ validate(#cb_context{req_verb = ?HTTP_DELETE}=Context, Id) ->
     load_conference(Id, Context).
 
 validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN) ->
-    %TODO: call conference members/moderators and bridge them to the conference.
     Context1 = load_conference(ConferenceId, Context),
     case cb_context:resp_status(Context1) of
         'success' -> kickoff_conference(Context1);
@@ -139,10 +146,16 @@ validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN) ->
     end;
 
 validate(Context, ConferenceId, ?END_PATH_TOKEN) ->
-    %TODO: call conference members/moderators and bridge them to the conference.
     Context1 = load_conference(ConferenceId, Context),
     case cb_context:resp_status(Context1) of
         'success' -> end_conference(Context1);
+        _Status -> Context1
+    end;
+
+validate(Context, ConferenceId, ?STATUS_PATH_TOKEN) ->
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> conference_status(Context1);
         _Status -> Context1
     end.
 
@@ -285,6 +298,15 @@ end_conference(Context) ->
     JObj = cb_context:doc(Context),
     'ok' = ob_conference:kick(wh_json:get_value(<<"_id">>, JObj)),
     crossbar_util:response_202(<<"processing request">>, Context).
+
+conference_status(Context) ->
+    JObj = cb_context:doc(Context),
+    case ob_conference:status(wh_json:get_value(<<"_id">>, JObj)) of
+    {'ok', Status} -> 
+        crossbar_util:response(wh_json:from_list(Status), Context);
+    _ ->
+        crossbar_util:response('error', <<"conference not started">>, 500, Context)
+    end.
 
 kick_member(ConferenceId, Number, Context) ->
     case ob_conference:kick(ConferenceId, Number) of

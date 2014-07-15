@@ -7,7 +7,7 @@
 
 %%API
 -export([start_link/3
-        ,kickoff/3
+        ,kickoff/3, status/1
         ,kick/2, kick/1
         ,join/2]).
 
@@ -83,6 +83,15 @@ join(ConferenceId, Number) ->
         'error'
     end.
 
+status(ConferenceId) ->
+    case ob_conferences:get_server(ConferenceId) of
+    {'ok', Srv} ->
+        gen_listener:call(Srv, {'status'});
+    _ ->
+        lager:info("ob_conference server for ~p not found", [ConferenceId]),
+        'error'
+    end.
+
 handle_info(_Msg, ObConfReq) ->
     lager:info("unhandled message: ~p", [_Msg]),
     {'noreply', ObConfReq}.
@@ -94,8 +103,9 @@ handle_cast('init', ObConf) ->
     Props = [{'restrict_to', [<<"CHANNEL_BRIDGE">>]}],
 
     gen_listener:add_binding(self(), 'call', Props),
-    [gen_listener:cast(self(), {'originate_participant', moderator, wh_util:to_binary(N)}) || N <- Moderators],
-    [gen_listener:cast(self(), {'originate_participant', member, wh_util:to_binary(N)}) || N <- Members],
+    lists:foreach(fun(N) -> 
+                    gen_listener:cast(self(), {'originate_participant', moderator, wh_util:to_binary(N)}) 
+                  end, Moderators ++ Members),
     ob_conferences:register_server(wh_json:get_value(<<"_id">>, Conference), self()),
 
     {'noreply', ObConf};
@@ -251,6 +261,20 @@ handle_call({'join', Number}, _From, ObConf) ->
     lager:debug("joining ~p into confernce", [Number]),
     gen_listener:cast(self(), {'originate_participant', member, Number}),
     {'reply', 'ok', ObConf};
+
+handle_call({'status'}, _From, ObConf) ->
+    ConferenceDoc = ObConf#ob_conf.conference,
+    Moderators = wh_json:get_value([<<"moderator">>, <<"numbers">>], ConferenceDoc),
+    Members = wh_json:get_value([<<"member">>, <<"numbers">>], ConferenceDoc),
+    
+    List1 = lists:foldl(fun(E, Acc) -> [{wh_util:to_binary(E), 'offline'}|Acc] end, [], Moderators ++ Members),
+    List2 = lists:foldl(fun({_, OP}, Acc) -> 
+                            {'ok', S} = gen_listener:call(OP#ob_conf_participant.pid, 'status'),
+                            [{OP#ob_conf_participant.number, S}|Acc] end, [], 
+                        dict:to_list(ObConf#ob_conf.ob_participants)),
+    Status = lists:ukeymerge(1, lists:ukeysort(1, List2), lists:ukeysort(1, List1)),
+    {'reply', {'ok', Status}, ObConf};
+
 
 handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.

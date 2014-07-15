@@ -29,6 +29,7 @@
                ,myq :: binary()
                ,de
                ,call = whapps_call:call()
+               ,status
                ,control_q
                ,server :: pid()
                ,self :: pid()
@@ -41,6 +42,9 @@ start_link(Server, Conference, OID, Call) ->
                                       ,{'queue_options', ?QUEUE_OPTIONS}
                                       ,{'consume_options', ?CONSUME_OPTIONS}
                                      ], [Server, Conference, OID, Call]).
+
+handle_call('status', _From, State) ->
+    {'reply', {'ok', State#state.status}, State};
 
 handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.
@@ -137,7 +141,7 @@ handle_cast('channel_answered', State) ->
     conf_discovery_req:search_for_conference(Conference, NewCall, Srv),
 
     %%FIXME: store Call to calls
-    {'noreply', State};
+    {'noreply', State#state{status='online'}};
 
 handle_cast('channel_destroyed', State) ->
     lager:info("channel destroyed, terminating"),
@@ -184,4 +188,5 @@ init([Server, Conference, OID, Call]) ->
                 conference=Conference, 
                 server=Server, 
                 self=self(),
-                call=Call}}.
+                call=Call,
+                status='proceeding'}}.
