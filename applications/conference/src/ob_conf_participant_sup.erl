@@ -39,7 +39,6 @@ start_ob_conf_participant(Server, Conference, OID, Call) ->
     case supervisor:start_child(?MODULE, [Server, Conference, OID, Call]) of
     {'ok', Pid} -> {'ok', Pid};
     _R -> 
-        lager:debug("jerry -- start ob_conf_participant faild ~p", [_R]),
         'error'
     end.
 

@@ -269,7 +269,7 @@ kick_member(ConferenceId, Number, Context) ->
     case ob_conference:kick(ConferenceId, Number) of
     'ok' -> crossbar_util:response_202(<<"processing request">>, Context);
     {'error', _Reason} -> 
-        lager:debug("jerry -- kicking ~p failed", [Number]),
+        lager:debug("kicking ~p failed", [Number]),
         crossbar_util:response_invalid_data(Number, Context)
     end.
 
