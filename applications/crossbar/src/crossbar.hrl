@@ -43,7 +43,7 @@
 -define(USERS_QCALL_NOUNS, [{<<"users">>, [_UserId, <<"quickcall">>, _Number]}
                             ,{?WH_ACCOUNTS_DB, [_]}
                            ]).
--define(USERS_IVRCALL_NOUNS, [{<<"users">>, [_UserId, <<"ivrcall">>, _Number]}
+-define(USERS_VCODE_NOUNS, [{<<"users">>, [_UserId, <<"validation_code">>, _Number]}
                             ,{?WH_ACCOUNTS_DB, [_]}
                            ]).
 -define(DEVICES_QCALL_NOUNS, [{<<"devices">>, [_DeviceId, <<"quickcall">>, _Number]}

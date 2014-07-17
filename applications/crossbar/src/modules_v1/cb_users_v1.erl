@@ -32,7 +32,7 @@
 -define(LIST_BY_USERNAME, <<"users/list_by_username">>).
 -define(CHANNELS, <<"channels">>).
 -define(QUICKCALL, <<"quickcall">>).
--define(IVRCALL, <<"ivrcall">>).
+-define(VCODE, <<"validation_code">>).
 
 %%%===================================================================
 %%% API
@@ -83,7 +83,7 @@ allowed_methods(_, ?CHANNELS) ->
 allowed_methods(_, ?QUICKCALL, _) ->
     [?HTTP_GET];
 
-allowed_methods(_, ?IVRCALL, _) ->
+allowed_methods(_, ?VCODE, _) ->
     [?HTTP_POST].
 
 %%--------------------------------------------------------------------
@@ -102,7 +102,7 @@ resource_exists() -> 'true'.
 resource_exists(_) -> 'true'.
 resource_exists(_, ?CHANNELS) -> 'true'.
 resource_exists(_, ?QUICKCALL, _) -> 'true';
-resource_exists(_, ?IVRCALL, _) -> 'true'.
+resource_exists(_, ?VCODE, _) -> 'true'.
 
 %%--------------------------------------------------------------------
 %% @public
@@ -197,8 +197,8 @@ validate(Context, UserId, ?QUICKCALL, _) ->
             cb_modules_util:maybe_originate_quickcall(Context1)
     end;
 
-validate(Context, UserId, ?IVRCALL, _) ->
-    cb_modules_util:maybe_originate_ivrcall(Context).
+validate(Context, UserId, ?VCODE, _) ->
+    cb_modules_util:maybe_originate_validation_code(Context).
     
 
 -spec post(cb_context:context(), path_token()) -> cb_context:context().
