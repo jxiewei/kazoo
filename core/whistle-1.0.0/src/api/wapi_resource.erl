@@ -88,7 +88,7 @@
                                ,{<<"Dial-Endpoint-Method">>, [<<"single">>, <<"simultaneous">>]}
                                ,{<<"Media">>, [<<"process">>, <<"bypass">>, <<"auto">>]}
                                ,{<<"Application-Name">>, [<<"park">>, <<"bridge">>, <<"transfer">>
-                                                         ,<<"fax">>, <<"eavesdrop">>, <<"say_validation_code">>]}
+                                                         ,<<"fax">>, <<"eavesdrop">>, <<"ivrcall">>]}
                                %% Eavesdrop
                                ,?EAVESDROP_MODE
                               ]).
