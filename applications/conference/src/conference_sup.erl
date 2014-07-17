@@ -22,6 +22,9 @@
                    ,?SUPER('conf_participant_sup')
                    ,?WORKER('conference_shared_listener')
                    ,?WORKER('conference_listener')
+                   ,?WORKER('ob_conferences')
+                   ,?SUPER('ob_conference_sup')
+                   ,?SUPER('ob_conf_participant_sup')
                   ]).
 
 %% ===================================================================

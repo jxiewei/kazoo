@@ -114,7 +114,7 @@
 -define(OPTIONAL_CHANNEL_STATUS_RESP_HEADERS, [<<"Custom-Channel-Vars">>, <<"Error-Msg">>
                                                ,<<"Switch-Hostname">>, <<"Switch-Nodename">>
                                                ,<<"Switch-URL">>, <<"Other-Leg-Call-ID">>
-                                               ,<<"Realm">>, <<"Username">>
+                                               ,<<"Realm">>, <<"Username">>, <<"Control-Queue">>
                                               ]).
 -define(CHANNEL_STATUS_RESP_VALUES, [{<<"Event-Category">>, <<"call_event">>}
                                      ,{<<"Event-Name">>, <<"channel_status_resp">>}

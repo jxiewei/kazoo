@@ -199,6 +199,7 @@ originate_quickcall(Endpoints, Call, Context) ->
                 'true' -> wh_util:rand_hex_binary(16);
                 'false' -> cb_context:req_id(Context)
             end,
+    [RequestUser, _] = binary:split(whapps_call:request(Call), <<"@">>),
     Request = [{<<"Application-Name">>, <<"transfer">>}
                ,{<<"Application-Data">>, get_application_data(Context)}
                ,{<<"Msg-ID">>, MsgId}
@@ -207,7 +208,8 @@ originate_quickcall(Endpoints, Call, Context) ->
                ,{<<"Ignore-Early-Media">>, get_ignore_early_media(Context)}
                ,{<<"Media">>, get_media(Context)}
                ,{<<"Outbound-Caller-ID-Name">>, <<"Device QuickCall">>}
-               ,{<<"Outbound-Caller-ID-Number">>, whapps_call:request_user(Call)}
+               %,{<<"Outbound-Caller-ID-Number">>, whapps_call:request_user(Call)}
+               ,{<<"Outbound-Caller-ID-Number">>, RequestUser}
                ,{<<"Outbound-Callee-ID-Name">>, get_caller_id_name(Context)}
                ,{<<"Outbound-Callee-ID-Number">>, get_caller_id_number(Context)}
                ,{<<"Dial-Endpoint-Method">>, <<"simultaneous">>}

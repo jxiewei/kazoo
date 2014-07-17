@@ -14,16 +14,43 @@
 
 -export([init/0
          ,allowed_methods/0, allowed_methods/1
+         ,allowed_methods/2, allowed_methods/3
          ,resource_exists/0, resource_exists/1
+         ,resource_exists/2, resource_exists/3
          ,validate/1, validate/2
+         ,validate/3, validate/4
          ,put/1
-         ,post/2
+         ,post/2, post/3, post/4
          ,delete/2
         ]).
 
 -include("../crossbar.hrl").
 
+-define(KICKOFF_PATH_TOKEN, <<"kickoff">>).
+-define(KICKOFF_URL, [{<<"conferences">>, [_, ?KICKOFF_PATH_TOKEN]}
+                      ,{?WH_ACCOUNT_DB, [_]}
+                     ]).
+-define(END_PATH_TOKEN, <<"end">>).
+-define(END_URL, [{<<"conferences">>, [_, ?END_PATH_TOKEN]}
+                  ,{?WH_ACCOUNT_DB, [_]}
+                 ]).
+-define(STATUS_PATH_TOKEN, <<"status">>).
+-define(STATUS_URL, [{<<"conferences">>, [_, ?STATUS_PATH_TOKEN]}
+                  ,{?WH_ACCOUNT_DB, [_]}
+                 ]).
+-define(JOIN_PATH_TOKEN, <<"join">>).
+-define(JOIN_URL, [{<<"conferences">>, [_, ?JOIN_PATH_TOKEN, _]}
+                     ,{?WH_ACCOUNT_DB, [_]}
+                    ]).
+-define(KICK_PATH_TOKEN, <<"kick">>).
+-define(KICK_URL, [{<<"conferences">>, [_, ?KICK_PATH_TOKEN, _]}
+                     ,{?WH_ACCOUNT_DB, [_]}
+                    ]).
+-define(SUCCESSFUL_HANGUP_CAUSES, [<<"NORMAL_CLEARING">>, <<"ORIGINATOR_CANCEL">>, <<"SUCCESS">>]).
+
 -define(CB_LIST, <<"conferences/crossbar_listing">>).
+-define(DEVICES_VIEW, <<"devices/listing_by_owner">>).
+
 
 %%%===================================================================
 %%% API
@@ -51,6 +78,16 @@ allowed_methods() ->
     [?HTTP_GET, ?HTTP_PUT].
 allowed_methods(_) ->
     [?HTTP_GET, ?HTTP_POST, ?HTTP_DELETE].
+allowed_methods(_, ?KICKOFF_PATH_TOKEN) ->
+    [?HTTP_POST];
+allowed_methods(_, ?END_PATH_TOKEN) ->
+    [?HTTP_POST];
+allowed_methods(_, ?STATUS_PATH_TOKEN) ->
+    [?HTTP_GET].
+allowed_methods(_, ?JOIN_PATH_TOKEN, _) ->
+    [?HTTP_POST];
+allowed_methods(_, ?KICK_PATH_TOKEN, _) ->
+    [?HTTP_POST].
 
 %%--------------------------------------------------------------------
 %% @public
@@ -65,6 +102,16 @@ allowed_methods(_) ->
 resource_exists() ->
     true.
 resource_exists(_) ->
+    true.
+resource_exists(_, ?KICKOFF_PATH_TOKEN) ->
+    true;
+resource_exists(_, ?END_PATH_TOKEN) ->
+    true;
+resource_exists(_, ?STATUS_PATH_TOKEN) ->
+    true.
+resource_exists(_, ?JOIN_PATH_TOKEN, _) ->
+    true;
+resource_exists(_, ?KICK_PATH_TOKEN, _) ->
     true.
 
 
@@ -91,9 +138,53 @@ validate(#cb_context{req_verb = ?HTTP_POST}=Context, Id) ->
 validate(#cb_context{req_verb = ?HTTP_DELETE}=Context, Id) ->
     load_conference(Id, Context).
 
+validate(Context, ConferenceId, ?KICKOFF_PATH_TOKEN) ->
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> kickoff_conference(Context1);
+        _Status -> Context1
+    end;
+
+validate(Context, ConferenceId, ?END_PATH_TOKEN) ->
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> end_conference(Context1);
+        _Status -> Context1
+    end;
+
+validate(Context, ConferenceId, ?STATUS_PATH_TOKEN) ->
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> conference_status(Context1);
+        _Status -> Context1
+    end.
+
+validate(Context, ConferenceId, ?JOIN_PATH_TOKEN, Number) ->
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> join_member(ConferenceId, Number, Context1);
+        _Status -> Context1
+    end;
+
+validate(Context, ConferenceId, ?KICK_PATH_TOKEN, Number) ->
+    Context1 = load_conference(ConferenceId, Context),
+    case cb_context:resp_status(Context1) of
+        'success' -> kick_member(ConferenceId, Number, Context1);
+        _Status -> Context1
+    end.
+
+
 -spec post(#cb_context{}, path_token()) -> #cb_context{}.
 post(Context, _) ->
     crossbar_doc:save(Context).
+
+post(Context, _, ?KICKOFF_PATH_TOKEN) ->
+    Context.
+
+post(Context, _, ?JOIN_PATH_TOKEN, _) ->
+    Context;
+post(Context, _, ?KICK_PATH_TOKEN, _) ->
+    Context.
 
 -spec put(#cb_context{}) -> #cb_context{}.
 put(Context) ->
@@ -191,3 +282,42 @@ normalize_users_results(JObj, Acc, UserId) ->
         UserId -> normalize_view_results(JObj, Acc);
         _ -> [undefined|Acc]
     end.
+
+kickoff_conference(Context) ->
+    JObj = cb_context:doc(Context),
+    AccountId = cb_context:account_id(Context),
+
+    {'ok', AuthDoc} = couch_mgr:open_cache_doc(?TOKEN_DB, cb_context:auth_token(Context)),
+    UserId = wh_json:get_value(<<"owner_id">>, AuthDoc),
+
+    Pid = ob_conference:kickoff(AccountId, UserId, wh_json:get_value(<<"_id">>, JObj)),
+    lager:info("ob_conference process started, pid ~p", [Pid]),
+    crossbar_util:response_202(<<"processing request">>, Context).
+
+end_conference(Context) ->
+    JObj = cb_context:doc(Context),
+    'ok' = ob_conference:kick(wh_json:get_value(<<"_id">>, JObj)),
+    crossbar_util:response_202(<<"processing request">>, Context).
+
+conference_status(Context) ->
+    JObj = cb_context:doc(Context),
+    case ob_conference:status(wh_json:get_value(<<"_id">>, JObj)) of
+    {'ok', Status} -> 
+        crossbar_util:response(wh_json:from_list(Status), Context);
+    _ ->
+        crossbar_util:response('error', <<"conference not started">>, 500, Context)
+    end.
+
+kick_member(ConferenceId, Number, Context) ->
+    case ob_conference:kick(ConferenceId, Number) of
+    'ok' -> crossbar_util:response_202(<<"processing request">>, Context);
+    {'error', _Reason} -> 
+        lager:debug("kicking ~p failed", [Number]),
+        crossbar_util:response_invalid_data(Number, Context)
+    end.
+
+join_member(ConferenceId, Number, Context) ->
+    ob_conference:join(ConferenceId, Number),
+    crossbar_util:response_202(<<"processing request">>, Context).
+
+    

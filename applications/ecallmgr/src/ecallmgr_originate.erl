@@ -438,7 +438,21 @@ get_originate_action(<<"transfer">>, JObj) ->
         Route ->
             Context = ?DEFAULT_FREESWITCH_CONTEXT,
             list_to_binary(["'m:^:", get_unset_vars(JObj)
-                            ,"transfer:", wnm_util:to_e164(Route)
+                            ,"transfer:", Route
+                            ," XML ", Context, "' inline"
+                           ])
+    end;
+get_originate_action(<<"conference">>, JObj) ->
+    ConferenceData = wh_json:get_value(<<"Application-Data">>, JObj),
+    case wh_json:get_value(<<"Conference-ID">>, ConferenceData) of
+        'undefined' -> <<"error">>;
+        ConferenceId ->
+            Context = ?DEFAULT_FREESWITCH_CONTEXT,
+            ConferenceConfig = wh_json:get_value(<<"Profile">>, ConferenceData, <<"default">>),
+            lager:debug("==jerry== conference appdata ~p~n", [ConferenceData]),
+            lager:debug("==jerry== conference flags ~p~n", [ecallmgr_call_command:get_conference_flags(ConferenceData)]),
+            list_to_binary(["'m:^:", get_unset_vars(JObj)
+                            ,"conference:", list_to_binary([ConferenceId, "@", ConferenceConfig, ecallmgr_call_command:get_conference_flags(ConferenceData)])
                             ," XML ", Context, "' inline"
                            ])
     end;

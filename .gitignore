@@ -11,6 +11,8 @@
 *.o
 *.pid
 *.dump
+*.swp
+*.swo
 core/*/test
 deps/*/test
 applications/*/test

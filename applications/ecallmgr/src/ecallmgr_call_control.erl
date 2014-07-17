@@ -699,11 +699,14 @@ handle_channel_create(Props, #state{callid=CallId}=State) ->
 -spec add_leg(wh_proplist(), api_binary(), state()) -> state().
 add_leg(Props, LegId, #state{other_legs=Legs
                              ,callid=CallId
+                             ,node=Node
+                             ,fetch_id=FetchId
                             }=State) ->
     case is_atom(LegId) orelse lists:member(LegId, Legs) of
         'true' -> State;
         'false' ->
             lager:debug("added leg ~s to call", [LegId]),
+            ecallmgr_call_sup:start_control_process(Node, LegId, FetchId),
             ConsumerPid = wh_amqp_channel:consumer_pid(),
             _ = spawn(fun() ->
                               _ = put('callid', CallId),
