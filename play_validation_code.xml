@@ -1,0 +1,16 @@
+<include>
+  <macro name="play_validation_code">
+    <input pattern="^(\d+)$">
+      <match>
+        <action function="play-file" data="ivr/ivr-your_validation_code_is.wav"/>
+        <action function="say" data="$1" method="iterated" type="number"/>
+        <action function="sleep" data="1000"/>
+        <action function="play-file" data="ivr/ivr-your_validation_code_is.wav"/>
+        <action function="say" data="$1" method="iterated" type="number"/>
+        <action function="sleep" data="1000"/>
+        <action function="play-file" data="ivr/ivr-your_validation_code_is.wav"/>
+        <action function="say" data="$1" method="iterated" type="number"/>
+      </match>
+    </input>
+  </macro>
+</include>
