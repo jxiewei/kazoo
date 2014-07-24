@@ -23,6 +23,7 @@
                          ,'omnipresence'
                          ,'milliwatt'
                          ,'pivot'
+                         ,'outbound'
                         ]).
 
 -define(WHISTLE_APPS_HRL, 'true').
