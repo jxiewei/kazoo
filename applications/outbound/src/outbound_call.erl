@@ -9,6 +9,8 @@
 -export([start_link/3
         ,start_outbound_call/1
         ,start_outbound_call/2
+        ,set_caller/1
+        ,wait_answer/0, wait_answer/1
         ]).
 
 %%gen_server callbacks
@@ -21,7 +23,8 @@
         ,code_change/3]).
 
 -define('SERVER', ?MODULE).
--define(DEFAULT_TIMEOUT, 30000).
+-define(DEFAULT_ORIGINATE_TIMEOUT, 3000).
+-define(DEFAULT_ANSWER_TIMEOUT, 30000).
 
 -define(RESPONDERS, []).
 -define(QUEUE_NAME, <<>>).
@@ -41,27 +44,49 @@ start_link(Endpoint, Call, CallerPid) ->
                                       ,{'consume_options', ?CONSUME_OPTIONS}
                                      ], [Endpoint, Call, CallerPid]).
 
-wait_outbound_call(Timeout) ->
+wait_originate(Timeout) ->
     Start = os:timestamp(),
     receive
-        {'outbound_call_answered', Ret} -> Ret;
-        {'outbound_call_failed', Ret} -> Ret;
-        _E -> 
-            lager:debug("jerry -- received ignoring event ~p", [_E]),
-            wait_outbound_call(wh_util:decr_timeout(Timeout, Start))
+        {'outbound_call_originated', Ret} -> {'ok', Ret};
+        {'outbound_call_originate_failed', Ret} -> {'error', Ret};
+        _E ->
+            lager:debug("jerry -- received other event ~p", [_E]),
+            wait_originate(wh_util:decr_timeout(Timeout, Start))
     after
-        Timeout ->
-            {'error', 'timeout'}
+        Timeout -> {'error', 'timeout'}
+    end.
+
+wait_answer() ->
+    wait_answer(?DEFAULT_ANSWER_TIMEOUT).
+wait_answer(Timeout) ->
+    Start = os:timestamp(),
+    receive
+        {'outbound_call_answered', Ret} -> {'ok', Ret};
+        {'outbound_call_rejected', Ret} -> {'error', Ret};
+        _E -> 
+            lager:debug("jerry -- received other event ~p", [_E]),
+            wait_answer(wh_util:decr_timeout(Timeout, Start))
+    after
+        Timeout -> {'error', 'timeout'}
     end.
             
 start_outbound_call(Call) ->
-    {'ok', _Pid} = outbound_call_sup:start_outbound_call('undefined', Call, self()),
-    wait_outbound_call(?DEFAULT_TIMEOUT).
+    {'ok', Pid} = outbound_call_sup:start_outbound_call('undefined', Call, self()),
+    case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
+        {'ok', Ret} -> {'ok', Pid, Ret};
+        _Return -> _Return
+    end.
 
 start_outbound_call(Endpoint, Call) ->
-    {'ok', _Pid} = outbound_call_sup:start_outbound_call(Endpoint, Call, self()),
-    wait_outbound_call(?DEFAULT_TIMEOUT).
-    
+    {'ok', Pid} = outbound_call_sup:start_outbound_call(Endpoint, Call, self()),
+    case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
+        {'ok', Ret} -> {'ok', Pid, Ret};
+        _Return -> _Return
+    end.
+
+set_caller(Server) ->
+    gen_listener:call(Server, 'set_caller').
+
 channel_answered(UUID) ->
     case whapps_util:amqp_pool_collect([{<<"Fields">>, [<<"Answered">>]}
                                         ,{<<"Call-ID">>, UUID}
@@ -157,14 +182,18 @@ handle_cast({'update_callid', CallId}, State) ->
                         fun(C) -> whapps_call:set_call_id(CallId, C) end
                         ,fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end]
                         ,State#state.mycall),
-    State#state.callerpid ! {'outbound_call_originated', {'ok', Call}},
     case channel_answered(CallId) of 
-        {'ok', 'true'} -> State#state.callerpid ! {'outbound_call_answered', Call};
+        {'ok', 'true'} -> 
+            %originate succeed and channel has answered.
+            State#state.callerpid ! {'outbound_call_originated', Call},
+            State#state.callerpid ! {'outbound_call_answered', Call};
         {'ok', 'false'} -> 
+            %originate succeed and channel has not answered.
             Props = [{'callid', CallId},{'restrict_to', [<<"CHANNEL_ANSWER">>, <<"CHANNEL_DESTROY">>]}], 
-            gen_listener:add_binding(self(), 'call', Props);
+            gen_listener:add_binding(self(), 'call', Props),
+            State#state.callerpid ! {'outbound_call_originated', Call};
         'error' ->
-            State#state.callerpid ! {'outbound_call_failed', {'error', 'channel_not_exist'}}
+            State#state.callerpid ! {'outbound_call_originate_failed', 'channel_not_exist'}
     end,
     {'noreply', State#state{mycall=Call}};
 
@@ -174,8 +203,9 @@ handle_cast({'originate_success', JObj}, State=#state{myendpoint=Endpoint}) when
     gen_listener:cast(self(), {'update_callid', CallId}),
     {'noreply', State};
     
+%originate command failed
 handle_cast({'originate_fail', _JObj}, State) ->
-    State#state.callerpid ! {'outbound_call_failed', {'error', 'originate_fail'}},
+    State#state.callerpid ! {'outbound_call_originate_failed', 'originate_fail'},
     {'stop', {'shutdown', 'successful'}, State};
 
 handle_cast({'channel_bridged', JObj}, State) ->
@@ -184,11 +214,12 @@ handle_cast({'channel_bridged', JObj}, State) ->
     {'noreply', State};
 
 handle_cast({'channel_answered', _JObj}, State) ->
-    State#state.callerpid ! {'outbound_call_answered', {'ok', State#state.mycall}},
+    State#state.callerpid ! {'outbound_call_answered', State#state.mycall},
     {'stop', {'shutdown', 'successful'}, State};
 
+%callid has updated, but channel is destroyed after.
 handle_cast({'channel_destroy', _JObj}, State) ->
-    State#state.callerpid ! {'outbound_call_failed', {'error', 'channel_destroyed'}},
+    State#state.callerpid ! {'outbound_call_rejected', 'channel_destroyed'},
     {'stop', {'shutdown', 'successful'}, State};
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
@@ -202,6 +233,8 @@ handle_cast(_Cast, State) ->
     lager:debug("unhandled cast: ~p", [_Cast]),
     {'noreply', State}.
 
+handle_call('set_caller', {Pid, _}, State) ->
+    {'reply', 'ok', State#state{callerpid=Pid}};
 handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.
 
