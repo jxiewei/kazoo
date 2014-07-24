@@ -56,6 +56,11 @@ wait_originate(Timeout) ->
         Timeout -> {'error', 'timeout'}
     end.
 
+%% TODO: Create a waiting list, add caller to the list when this api invoked.
+%% Notify all waiter when channel event occured.
+%% TODO: maybe it's better to create a generic waiting mechanism in whapps_call_command?
+%% basic idea is to create a process to monitor amqp message for a specified call, 
+%% block caller and return when specified event occurs.
 wait_answer() ->
     wait_answer(?DEFAULT_ANSWER_TIMEOUT).
 wait_answer(Timeout) ->
@@ -150,6 +155,7 @@ handle_cast('originate_outbound_call', State) ->
         E -> E
     end,
 
+    %FIXME: codec renegotiation issues.
     [RequestUser, _] = binary:split(whapps_call:request(Call), <<"@">>),
     Request = props:filter_undefined(
                  [{<<"Application-Name">>, <<"park">>}
