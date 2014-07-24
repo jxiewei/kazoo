@@ -13,6 +13,7 @@
          ,get_devices_owned_by/2
          ,maybe_originate_quickcall/1
          ,maybe_originate_ivrcall/1
+         ,maybe_originate_callback/1
          ,is_superduper_admin/1
          ,attachment_name/2
          ,bucket_name/1
@@ -88,6 +89,16 @@ maybe_originate_quickcall(Context) ->
             originate_quickcall(Endpoints, Call, default_bleg_cid(Call, Context))
     end.
 
+maybe_originate_callback(Context) ->
+    Call = create_call_from_context(Context),
+    case get_endpoints(Call, Context) of
+        [] ->
+            cb_context:add_system_error('unspecified_fault', Context);
+        Endpoints ->
+            originate_callback(Endpoints, Call, default_bleg_cid(Call, Context))
+    end.
+
+
 maybe_originate_ivrcall(Context) ->
     Call = create_call_from_context(Context),
     [Number, Realm] = binary:split(whapps_call:request(Call), <<"@">>),
@@ -136,6 +147,12 @@ request_specific_extraction_funs_from_nouns(?USERS_IVRCALL_NOUNS) ->
      ,fun(C) -> whapps_call:set_request(<<_Number/binary, "@ivrcall">>, C) end
      ,fun(C) -> whapps_call:set_to(<<_Number/binary, "@ivrcall">>, C) end
     ];
+request_specific_extraction_funs_from_nouns(?DEVICES_CALLBACK_NOUNS) ->
+    [fun(C) -> whapps_call:set_authorizing_id(_DeviceId, C) end
+     ,fun(C) -> whapps_call:set_authorizing_type(<<"device">>, C) end
+     ,fun(C) -> whapps_call:set_request(<<_Number/binary, "@devicecallback">>, C) end
+     ,fun(C) -> whapps_call:set_to(<<_Number/binary, "@devicecallback">>, C) end
+    ];
 
 request_specific_extraction_funs_from_nouns(_ReqNouns) ->
     [].
@@ -155,6 +172,23 @@ get_endpoints(Call, Context, ?DEVICES_QCALL_NOUNS) ->
         {'ok', []} -> [];
         {'ok', Endpoints} -> Endpoints
     end;
+
+get_endpoints(Call, Context, ?DEVICES_CALLBACK_NOUNS) ->
+    Properties = wh_json:from_list([{<<"can_call_self">>, 'true'}
+                                    ,{<<"suppress_clid">>, 'true'}
+                                    ,{<<"source">>, 'cb_devices'}
+                                   ]),
+    case cf_endpoint:build(cb_context:doc(Context), Properties, aleg_cid(_Number, Call)) of
+        {'error', _R} -> 
+            lager:debug("jerry -- cf_endpoint:build failed, error ~p",[_R]),
+            [];
+        {'ok', []} -> 
+            lager:debug("jerry -- build returns no endpoint"),
+            [];
+        {'ok', Endpoints} -> Endpoints
+    end;
+
+
 get_endpoints(Call, _Context, ?USERS_QCALL_NOUNS) ->
     Properties = wh_json:from_list([{<<"can_call_self">>, 'true'}
                                     ,{<<"suppress_clid">>, 'true'}
@@ -221,6 +255,38 @@ originate_quickcall(Endpoints, Call, Context) ->
     wapi_resource:publish_originate_req(props:filter_undefined(Request)),
     crossbar_util:response_202(<<"processing request">>, cb_context:set_resp_data(Context, Request)).
 
+-spec originate_callback(wh_json:objects(), whapps_call:call(), cb_context:context()) -> cb_context:context().
+originate_callback(_Endpoints=[Endpoint|_], Call, Context) ->
+
+    
+    case outbound_call:start_outbound_call(Endpoint, Call) of
+        {'error', Reason} ->
+            lager:debug("jerry -- start outbound failed, reason ~p", [Reason]),
+            crossbar_util:response('error', <<"call failed">>, 404, Context);
+        {'ok', C} ->
+            lager:debug("jerry -- start outbound successfully, new call is ~p", [C]),
+            %whapps_call_command:wait_for_answer(C),
+
+            CCVs = [{<<"Account-ID">>, cb_context:account_id(Context)}
+                    ,{<<"Retain-CID">>, <<"true">>}
+                    ,{<<"Inherit-Codec">>, <<"false">>}
+                    ,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
+                    ,{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
+                   ],
+
+            ?DEVICES_CALLBACK_NOUNS = cb_context:req_nouns(Context),
+            OtherEndpoint = [{<<"Invite-Format">>, <<"route">>}
+                            ,{<<"Route">>,  <<"loopback/", _Number/binary, "/context_2">>}
+                            ,{<<"To-DID">>, _Number}
+                            ,{<<"To-Realm">>, whapps_call:request_realm(C)}
+                            ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
+                            ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>, <<"Authorizing-ID">>, <<"Authorizing-Type">>]}
+                            ],
+            whapps_call_command:bridge([wh_json:from_list(OtherEndpoint)], C),
+            %whapps_call_command:bridge(Endpoints, C),
+            crossbar_util:response_202(<<"processing request">>, cb_context:set_resp_data(Context, wh_json:new()))
+    end.
+
 originate_ivrcall(Endpoints, Call, Context) ->
     CCVs = [{<<"Account-ID">>, cb_context:account_id(Context)}
             ,{<<"Retain-CID">>, <<"true">>}
@@ -267,6 +333,8 @@ get_application_data(Context) ->
     get_application_data_from_nouns(cb_context:req_nouns(Context)).
 
 get_application_data_from_nouns(?DEVICES_QCALL_NOUNS) ->
+    wh_json:from_list([{<<"Route">>, _Number}]);
+get_application_data_from_nouns(?DEVICES_CALLBACK_NOUNS) ->
     wh_json:from_list([{<<"Route">>, _Number}]);
 get_application_data_from_nouns(?USERS_QCALL_NOUNS) ->
     wh_json:from_list([{<<"Route">>, _Number}]);
