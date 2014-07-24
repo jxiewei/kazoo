@@ -257,34 +257,39 @@ originate_quickcall(Endpoints, Call, Context) ->
 
 -spec originate_callback(wh_json:objects(), whapps_call:call(), cb_context:context()) -> cb_context:context().
 originate_callback(_Endpoints=[Endpoint|_], Call, Context) ->
-
-    
     case outbound_call:start_outbound_call(Endpoint, Call) of
         {'error', Reason} ->
             lager:debug("jerry -- start outbound failed, reason ~p", [Reason]),
             crossbar_util:response('error', <<"call failed">>, 404, Context);
-        {'ok', C} ->
+        {'ok', Server, C} ->
             lager:debug("jerry -- start outbound successfully, new call is ~p", [C]),
+            Context1 = crossbar_util:response_202(<<"processing request">>, cb_context:set_resp_data(Context, wh_json:new())),
             %whapps_call_command:wait_for_answer(C),
 
-            CCVs = [{<<"Account-ID">>, cb_context:account_id(Context)}
-                    ,{<<"Retain-CID">>, <<"true">>}
-                    ,{<<"Inherit-Codec">>, <<"false">>}
-                    ,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
-                    ,{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
-                   ],
+            spawn(fun() ->
+                outbound_call:set_caller(Server),
+                outbound_call:wait_answer(),
 
-            ?DEVICES_CALLBACK_NOUNS = cb_context:req_nouns(Context),
-            OtherEndpoint = [{<<"Invite-Format">>, <<"route">>}
-                            ,{<<"Route">>,  <<"loopback/", _Number/binary, "/context_2">>}
-                            ,{<<"To-DID">>, _Number}
-                            ,{<<"To-Realm">>, whapps_call:request_realm(C)}
-                            ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
-                            ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>, <<"Authorizing-ID">>, <<"Authorizing-Type">>]}
-                            ],
-            whapps_call_command:bridge([wh_json:from_list(OtherEndpoint)], C),
-            %whapps_call_command:bridge(Endpoints, C),
-            crossbar_util:response_202(<<"processing request">>, cb_context:set_resp_data(Context, wh_json:new()))
+                CCVs = [{<<"Account-ID">>, cb_context:account_id(Context)}
+                        ,{<<"Retain-CID">>, <<"true">>}
+                        ,{<<"Inherit-Codec">>, <<"false">>}
+                        ,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
+                        ,{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
+                        ],
+
+                ?DEVICES_CALLBACK_NOUNS = cb_context:req_nouns(Context),
+                OtherEndpoint = [{<<"Invite-Format">>, <<"route">>}
+                                ,{<<"Route">>,  <<"loopback/", _Number/binary, "/context_2">>}
+                                ,{<<"To-DID">>, _Number}
+                                ,{<<"To-Realm">>, whapps_call:request_realm(C)}
+                                ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
+                                ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>, <<"Authorizing-ID">>, <<"Authorizing-Type">>]}
+                                ],
+                whapps_call_command:bridge([wh_json:from_list(OtherEndpoint)], C)
+                end
+                %whapps_call_command:bridge(Endpoints, C),
+            ),
+            Context1
     end.
 
 originate_ivrcall(Endpoints, Call, Context) ->
