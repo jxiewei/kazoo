@@ -6,8 +6,9 @@
 -include("outbound.hrl").
 
 %%API
--export([start_link/1
+-export([start_link/3
         ,start_outbound_call/1
+        ,start_outbound_call/2
         ]).
 
 %%gen_server callbacks
@@ -20,31 +21,33 @@
         ,code_change/3]).
 
 -define('SERVER', ?MODULE).
--define(DEFAULT_TIMEOUT, 3).
+-define(DEFAULT_TIMEOUT, 30000).
 
 -define(RESPONDERS, []).
 -define(QUEUE_NAME, <<>>).
 -define(QUEUE_OPTIONS, []).
 -define(CONSUME_OPTIONS, []).
 
--record(state, {outboundid, mycall, callerpid}).
+-record(state, {outboundid, mycall, myendpoint, callerpid, myq, server}).
 
 %% API
 
-start_link(Call) ->
+start_link(Endpoint, Call, CallerPid) ->
     Bindings = [{'self', []}],
     gen_listener:start_link(?MODULE, [{'responders', ?RESPONDERS}
                                       ,{'bindings', Bindings}
                                       ,{'queue_name', ?QUEUE_NAME}
                                       ,{'queue_options', ?QUEUE_OPTIONS}
                                       ,{'consume_options', ?CONSUME_OPTIONS}
-                                     ], [Call]).
+                                     ], [Endpoint, Call, CallerPid]).
 
 wait_outbound_call(Timeout) ->
     Start = os:timestamp(),
     receive
-        {'outbound_call_completed', Ret} -> Ret;
-        _ -> 
+        {'outbound_call_answered', Ret} -> Ret;
+        {'outbound_call_failed', Ret} -> Ret;
+        _E -> 
+            lager:debug("jerry -- received ignoring event ~p", [_E]),
             wait_outbound_call(wh_util:decr_timeout(Timeout, Start))
     after
         Timeout ->
@@ -52,8 +55,29 @@ wait_outbound_call(Timeout) ->
     end.
             
 start_outbound_call(Call) ->
-    outbound_call_sup:start_outbound_call(Call, self()),
+    {'ok', _Pid} = outbound_call_sup:start_outbound_call('undefined', Call, self()),
     wait_outbound_call(?DEFAULT_TIMEOUT).
+
+start_outbound_call(Endpoint, Call) ->
+    {'ok', _Pid} = outbound_call_sup:start_outbound_call(Endpoint, Call, self()),
+    wait_outbound_call(?DEFAULT_TIMEOUT).
+    
+channel_answered(UUID) ->
+    case whapps_util:amqp_pool_collect([{<<"Fields">>, [<<"Answered">>]}
+                                        ,{<<"Call-ID">>, UUID}
+                                        |wh_api:default_headers(?APP_NAME, ?APP_VERSION)
+                                       ]
+                                       ,fun wapi_call:publish_query_channels_req/1
+                                       %,fun wapi_call:query_channels_resp_v/1
+                                       ,{'ecallmgr', 'true'}
+                                       ,20000)
+    of
+    {'ok', [Resp|_]} ->
+        {'ok', wh_json:get_value([<<"Channels">>, UUID, <<"Answered">>], Resp)};
+    _R ->
+        lager:notice("failed to get channel information ~p", [_R]),
+        {'error'}
+    end.
 
 channel_control_queue(UUID) ->
     Req = [{<<"Call-ID">>, wh_util:to_binary(UUID)}
@@ -77,7 +101,9 @@ handle_info(_Msg, State) ->
     lager:info("unhandled message: ~p", [_Msg]),
     {'noreply', State}.
 
-handle_cast('originate_outbound_call', State={outboundid=OutboundId, mycall=Call}) ->
+handle_cast('originate_outbound_call', State) ->
+    lager:debug("jerry -- originating outbound call"),
+    #state{outboundid=OutboundId, mycall=Call, myq=Q} = State,
     AccountId = whapps_call:account_id(Call),
 
     CCVs = [{<<"Account-ID">>, AccountId}
@@ -88,27 +114,32 @@ handle_cast('originate_outbound_call', State={outboundid=OutboundId, mycall=Call
             ,{<<"OutBound-ID">>, OutboundId}
            ],
 
-    Number = whapps_call:callee_id_number(Call),
-    Endpoint = [{<<"Invite-Format">>, <<"route">>}
-                ,{<<"Route">>,  <<"loopback/", Number/binary, "/context_2">>}
-                ,{<<"To-DID">>, whapps_call:callee_id_number(Call)}
-                ,{<<"To-Realm">>, whapps_call:request_realm(Call)}
-                ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
-               ],
+    Number = whapps_call:request_user(Call),
+    Endpoint = 
+    case State#state.myendpoint of
+        'undefined' -> wh_json:from_list([{<<"Invite-Format">>, <<"route">>}
+                            ,{<<"Route">>,  <<"loopback/", Number/binary, "/context_2">>}
+                            ,{<<"To-DID">>, Number}
+                            ,{<<"To-Realm">>, whapps_call:request_realm(Call)}
+                            ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}]);
+        E -> E
+    end,
 
+    [RequestUser, _] = binary:split(whapps_call:request(Call), <<"@">>),
     Request = props:filter_undefined(
                  [{<<"Application-Name">>, <<"park">>}
                  ,{<<"Originate-Immediate">>, 'true'}
                  ,{<<"Msg-ID">>, OutboundId}         
-                 ,{<<"Endpoints">>, [wh_json:from_list(Endpoint)]}
-                 ,{<<"Outbound-Caller-ID-Name">>, whapps_call:caller_id_name(Call)}
-                 ,{<<"Outbound-Caller-ID-Number">>, whapps_call:caller_id_number(Call)}
-                 ,{<<"Outbound-Callee-ID-Name">>, whapps_call:callee_id_name(Call)}
-                 ,{<<"Outbound-Callee-ID-Number">>, whapps_call:callee_id_number(Call)}
+                 ,{<<"Endpoints">>, [Endpoint]}
+                 ,{<<"Outbound-Caller-ID-Name">>, <<"Outbound Call">>}
+                 ,{<<"Outbound-Caller-ID-Number">>, RequestUser}
+                 ,{<<"Outbound-Callee-ID-Name">>, 'undefined'}
+                 ,{<<"Outbound-Callee-ID-Number">>, 'undefined'}
                  ,{<<"Request">>, whapps_call:request(Call)}
                  ,{<<"From">>, whapps_call:from(Call)}
                  ,{<<"Dial-Endpoint-Method">>, <<"single">>}
                  ,{<<"Continue-On-Fail">>, 'false'}
+                 ,{<<"Server-ID">>, Q}
                  ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
                  ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>
                                                      ,<<"Authorizing-ID">>, <<"Authorizing-Type">>
@@ -119,17 +150,45 @@ handle_cast('originate_outbound_call', State={outboundid=OutboundId, mycall=Call
     wapi_resource:publish_originate_req(Request),
     {'noreply', State};
 
-handle_cast({'channel_bridged', JObj}, State) ->
-    OutboundId = wh_json:get_value([<<"Custom-Channel-Vars">>, <<"OutBound-ID">>], JObj),
-    OtherLegCallId = wh_json:get_binary_value(<<"Other-Leg-Call-ID">>, JObj),
-    lager:debug("received channel bridge event for outboundid ~p, other_leg_callid ~p", [OutboundId, OtherLegCallId]),
-    
-    CtrlQ = channel_control_queue(OtherLegCallId),
+handle_cast({'update_callid', CallId}, State) ->
+    CtrlQ = channel_control_queue(CallId),
+    lager:debug("jerry -- new callid ~p, new ctrl queue ~p", [CallId, CtrlQ]),
     Call = whapps_call:exec([
-                    fun(C) -> whapps_call:set_call_id(OtherLegCallId, C) end
-                    ,fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end]
-                    ,State#state.mycall),
-    gen_listener:cast(State#state.callerpid, {'outbound_call_completed', {'ok', Call}}),
+                        fun(C) -> whapps_call:set_call_id(CallId, C) end
+                        ,fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end]
+                        ,State#state.mycall),
+    State#state.callerpid ! {'outbound_call_originated', {'ok', Call}},
+    case channel_answered(CallId) of 
+        {'ok', 'true'} -> State#state.callerpid ! {'outbound_call_answered', Call};
+        {'ok', 'false'} -> 
+            Props = [{'callid', CallId},{'restrict_to', [<<"CHANNEL_ANSWER">>, <<"CHANNEL_DESTROY">>]}], 
+            gen_listener:add_binding(self(), 'call', Props);
+        'error' ->
+            State#state.callerpid ! {'outbound_call_failed', {'error', 'channel_not_exist'}}
+    end,
+    {'noreply', State#state{mycall=Call}};
+
+
+handle_cast({'originate_success', JObj}, State=#state{myendpoint=Endpoint}) when Endpoint =/= 'undefined' ->
+    CallId = wh_json:get_value(<<"Call-ID">>, JObj),
+    gen_listener:cast(self(), {'update_callid', CallId}),
+    {'noreply', State};
+    
+handle_cast({'originate_fail', _JObj}, State) ->
+    State#state.callerpid ! {'outbound_call_failed', {'error', 'originate_fail'}},
+    {'stop', {'shutdown', 'successful'}, State};
+
+handle_cast({'channel_bridged', JObj}, State) ->
+    OtherLegCallId = wh_json:get_binary_value(<<"Other-Leg-Call-ID">>, JObj),
+    gen_listener:cast(self(), {'update_callid', OtherLegCallId}),
+    {'noreply', State};
+
+handle_cast({'channel_answered', _JObj}, State) ->
+    State#state.callerpid ! {'outbound_call_answered', {'ok', State#state.mycall}},
+    {'stop', {'shutdown', 'successful'}, State};
+
+handle_cast({'channel_destroy', _JObj}, State) ->
+    State#state.callerpid ! {'outbound_call_failed', {'error', 'channel_destroyed'}},
     {'stop', {'shutdown', 'successful'}, State};
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
@@ -137,7 +196,7 @@ handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
 
 handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
     gen_listener:cast(self(), 'originate_outbound_call'),
-    {'noreply', State};
+    {'noreply', State#state{myq=_QueueName}};
 
 handle_cast(_Cast, State) ->
     lager:debug("unhandled cast: ~p", [_Cast]),
@@ -146,8 +205,26 @@ handle_cast(_Cast, State) ->
 handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.
 
-handle_event(JObj, _State) ->
-    lager:debug("unhandled event ~p", [JObj]),
+handle_event(JObj, State=#state{myendpoint=Endpoint}) when Endpoint =/= 'undefined' ->
+    case whapps_util:get_event_type(JObj) of
+        {<<"resource">>, <<"originate_resp">>} ->
+            lager:debug("jerry -- got orignate response"),
+            gen_listener:cast(State#state.server, {'originate_success', JObj});
+        {<<"error">>, _} ->
+            lager:debug("jerry -- received error response"),
+            case wh_json:get_value(<<"Msg-ID">>, JObj) =:= State#state.outboundid of
+                'true' -> gen_listener:cast(State#state.server, {'originate_fail', JObj});
+                _R -> 'ok'
+            end;
+        {<<"call_event">>, <<"CHANNEL_ANSWER">>} ->
+            lager:debug("jerry -- channel answered"),
+            gen_listener:cast(State#state.server, {'channel_answered', JObj});
+        {<<"call_event">>, <<"CHANNEL_DESTROY">>} ->
+            lager:debug("jerry -- channel destroyed"),
+            gen_listener:cast(State#state.server, {'channel_destroy', JObj});
+        _R ->
+            lager:debug("jerry -- received unexpected event ~p", [JObj])
+    end,
     {'reply', []}.
 
 terminate(_Reason, _ObConf) ->
@@ -156,9 +233,9 @@ terminate(_Reason, _ObConf) ->
 code_change(_OldVsn, ObConf, _Extra) ->
     {'ok', ObConf}.
 
-init([Call, CallerPid]) ->
+init([Endpoint, Call, CallerPid]) ->
     process_flag('trap_exit', 'true'),
     OutboundId = wh_util:rand_hex_binary(16),
     Server = outbound_call_manager:pid(),
     gen_listener:cast(Server, {'outbound_call_started', OutboundId, Call}),
-    {'ok', #state{outboundid=OutboundId, mycall=Call, callerpid=CallerPid}}.
+    {'ok', #state{outboundid=OutboundId, mycall=Call, myendpoint=Endpoint, callerpid=CallerPid, server=self()}}.
