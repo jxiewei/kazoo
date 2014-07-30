@@ -34,6 +34,11 @@
                         ,{?WH_ACCOUNTS_DB, [_]}
                        ]).
 
+-define(CALLBACK_PATH_TOKEN, <<"callback">>).
+-define(CALLBACK_URL, [{<<"devices">>, [_, ?CALLBACK_PATH_TOKEN, _]}
+                        ,{?WH_ACCOUNTS_DB, [_]}
+                      ]).
+
 -define(STATUS_PATH_TOKEN, <<"status">>).
 
 
@@ -79,6 +84,8 @@ allowed_methods(_) ->
     [?HTTP_GET, ?HTTP_POST, ?HTTP_DELETE].
 
 allowed_methods(_, ?QUICKCALL_PATH_TOKEN, _) ->
+    [?HTTP_GET];
+allowed_methods(_, ?CALLBACK_PATH_TOKEN, _) ->
     [?HTTP_GET].
 
 %%--------------------------------------------------------------------
@@ -95,7 +102,8 @@ allowed_methods(_, ?QUICKCALL_PATH_TOKEN, _) ->
 
 resource_exists() -> 'true'.
 resource_exists(_) -> 'true'.
-resource_exists(_, ?QUICKCALL_PATH_TOKEN, _) -> 'true'.
+resource_exists(_, ?QUICKCALL_PATH_TOKEN, _) -> 'true';
+resource_exists(_, ?CALLBACK_PATH_TOKEN, _) -> 'true'.
 
 %%--------------------------------------------------------------------
 %% @public
@@ -176,7 +184,12 @@ validate(Context, DeviceId, ?QUICKCALL_PATH_TOKEN, _) ->
         'true' -> Context1;
         'false' ->
             cb_modules_util:maybe_originate_quickcall(Context1)
-    end.
+    end;
+
+validate(Context, DeviceId, ?CALLBACK_PATH_TOKEN, _) ->
+    Context1 = load_device(DeviceId, Context),
+    cb_modules_util:maybe_originate_callback(Context1).
+
 
 -spec post(cb_context:context(), path_token()) -> cb_context:context().
 post(Context, DeviceId) ->
