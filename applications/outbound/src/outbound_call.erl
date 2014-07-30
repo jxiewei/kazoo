@@ -7,9 +7,8 @@
 
 %%API
 -export([start_link/4
-        ,start/1
-        ,start/2
-        ,stop/1
+        ,start/1, start/2
+        ,stop/1, status/1
         ,set_listener/2
         ,wait_answer/0, wait_answer/1
         ]).
@@ -99,6 +98,13 @@ start(Endpoint, Call) ->
 stop(Id) ->
     outbound_call_manager:stop(Id).
 
+status(Id) ->
+    case outbound_call_manager:get_server(Id) of
+        {'ok', Pid} ->
+            gen_listener:call(Pid, 'satus');
+        _Return -> _Return
+    end.
+
 set_listener(Id, ListenerPid) ->
     case outbound_call_manager:get_server(Id) of
         {'ok', Pid} ->
@@ -146,8 +152,9 @@ handle_info(_Msg, State) ->
     {'noreply', State}.
 
 handle_cast('originate_outbound_call', State) ->
-    lager:debug("jerry -- originating outbound call"),
     #state{outboundid=OutboundId, mycall=Call, myq=Q} = State,
+    put('callid', OutboundId),
+    lager:debug("jerry -- originating outbound call"),
     AccountId = whapps_call:account_id(Call),
 
     CCVs = [{<<"Account-ID">>, AccountId}
@@ -275,6 +282,11 @@ handle_cast(_Cast, State) ->
 
 handle_call({'set_listener', Pid}, _From, State) ->
     {'reply', 'ok', State#state{from=Pid}};
+
+handle_call('status', _From, State) ->
+    #state{status=Status} = State,
+    {'reply', {'ok', Status}, State};
+
 handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.
 
