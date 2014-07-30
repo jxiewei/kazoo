@@ -1,0 +1,13 @@
+{application, broadcast,
+ [
+  {description, "Broadcasting Service Provider"},
+  {vsn, "1.0.0"},
+  {modules, []},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { broadcast_app, []}},
+  {env, []}
+ ]}.
