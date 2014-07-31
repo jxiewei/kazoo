@@ -129,7 +129,7 @@ handle_cast({'start_participant', Number}, #state{account_id=AccountId
                ,fun(C) -> whapps_call:set_owner_id(UserId, C) end]
                ,whapps_call:new()),
 
-    {'ok', Pid} = broadcast_participant:start(Call, wh_json:get_value(<<"media">>, Task)),
+    {'ok', Pid} = broadcast_participant:start(Call, wh_json:get_value(<<"media_id">>, Task)),
     {'noreply', State#state{participants=dict:store(Number, Pid, Participants)}};
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->

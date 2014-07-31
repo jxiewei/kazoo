@@ -102,7 +102,7 @@ handle_call({'new_task', AccountId, UserId, TaskId}, _From, State) ->
             {'reply', {'error', 'already_started'}, State};
         _ -> 
             {'ok', Pid} = broadcast_task_sup:new_task(AccountId, UserId, TaskId),
-            {'reply', {'ok', Pid}, State#state{tasks=dict:store(TaskId, Pid, Tasks)}}
+            {'reply', 'ok', State#state{tasks=dict:store(TaskId, Pid, Tasks)}}
     end;
 
 handle_call({'del_task', TaskId}, _From, State) ->
