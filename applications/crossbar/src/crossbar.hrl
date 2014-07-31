@@ -102,6 +102,7 @@
                           ,'cb_vmboxes'
                           ,'cb_whitelabel'
                           ,'cb_faxboxes'
+                          ,'cb_broadcasts'
                          ]).
 
 -record(cb_context, {

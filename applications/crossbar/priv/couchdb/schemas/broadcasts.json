@@ -1,0 +1,44 @@
+{
+   "_id":"broadcasts",
+   "$schema":"http://json-schema.org/draft-03/schema#",
+   "id":"http://json-schema.org/draft-03/schema#",
+   "description":"Schema for broadcast tasks",
+   "properties":{
+      "name":{
+         "name":"Name",
+         "description":"A friendly name for the broadcast task",
+         "required":"true",
+         "type":"string",
+         "minLength":1,
+         "maxLength":128
+      },
+      "media_id":{
+         "name":"Media (ID)",
+         "description":"The ID of the media object broadcasted to participants",
+         "required":"true",
+         "type":"string",
+         "maxlength":128
+      },
+      "presenters":{
+         "name":"Presenters",
+         "description":"Defines the presenters of the broadcast",
+         "type":"array",
+         "items":[
+            {
+                "type":"string"
+            }
+         ],
+      },
+      "listeners":{
+         "name":"Listeners",
+         "description":"Defines the listeners of the broadcast",
+         "required":"true",
+         "type":"array",
+         "items":[
+            {
+                "type":"string"
+            }
+         ],
+      },
+   }
+}
