@@ -12,6 +12,19 @@
          "minLength":1,
          "maxLength":128
       },
+      "scheduler":{
+        "name":"Scheduler type",
+        "description":"Type of scheduler, 0/1/2",
+        "required":"true",
+        "type":"integer",
+        "minimum":0,
+        "maximum":2,
+      },
+      "schedulearg":{
+        "name":"Scheduler argument",
+        "description":"Arguments of scheduler",
+        "type":"object",
+      },
       "media_id":{
          "name":"Media (ID)",
          "description":"The ID of the media object broadcasted to participants",
@@ -23,6 +36,7 @@
          "name":"Presenters",
          "description":"Defines the presenters of the broadcast",
          "type":"array",
+         "uniqueItems":true,
          "items":[
             {
                 "type":"string"
@@ -34,6 +48,7 @@
          "description":"Defines the listeners of the broadcast",
          "required":"true",
          "type":"array",
+         "uniqueItems":true,
          "items":[
             {
                 "type":"string"

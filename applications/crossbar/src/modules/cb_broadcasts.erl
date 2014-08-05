@@ -119,8 +119,12 @@ put(Context) ->
     UserId = wh_json:get_value(<<"owner_id">>, AuthDoc),
     DocId = wh_json:get_value(<<"_id">>, cb_context:doc(Context1)),
 
-    'ok' = broadcast_task:start(AccountId, UserId, DocId),
-    Context1.
+    case broadcast_task:start(AccountId, UserId, DocId) of
+        'ok' -> Context1;
+        {'error', Reason} ->
+            couch_mgr:del_doc(cb_context:account_db(Context1), cb_context:doc(Context1)),
+            crossbar_util:response('error', <<"Broadcast task failed to start, reason: ", Reason/binary>>, 500, Context1)
+    end.
 
 -spec delete(#cb_context{}, path_token()) -> #cb_context{}.
 delete(Context, _) ->
