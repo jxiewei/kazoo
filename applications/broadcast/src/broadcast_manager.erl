@@ -1,4 +1,4 @@
-%%%-------------------------------------------------------------------
+%%-------------------------------------------------------------------
 %%% @copyright (C) 2013, 2600Hz
 %%% @doc
 %%%
@@ -15,6 +15,7 @@
         ,handle_call/3, handle_cast/2
         ,handle_info/2, handle_event/2
         ,terminate/2, code_change/3
+        ,ecron_mfa/3
         ]).
 
 -include("broadcast.hrl").
@@ -47,9 +48,14 @@ start_link() ->
                                       ,{'consume_options', ?CONSUME_OPTIONS}
                                      ], []).
 
+
 new_task(AccountId, UserId, TaskId) ->
     [Pid] = gproc:lookup_pids({'p', 'l', 'broadcast_manager'}),
-    gen_listener:call(Pid, {'new_task', AccountId, UserId, TaskId}).
+    AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
+    {'ok', TaskDoc} = couch_mgr:open_cache_doc(AccountDb, TaskId),
+    Scheduler = wh_json:get_integer_value(<<"scheduler">>, TaskDoc),
+    lager:debug("Creating task, scheduler ~p, taskid ~p", [Scheduler, TaskId]),
+    gen_listener:call(Pid, {'new_task', Scheduler, AccountId, UserId, TaskId}).
 
 del_task(TaskId) ->
     [Pid] = gproc:lookup_pids({'p', 'l', 'broadcast_manager'}),
@@ -79,6 +85,15 @@ init([]) ->
     gproc:reg({'p', 'l', 'broadcast_manager'}),
     {'ok', #state{tasks=dict:new()}}.
 
+ecron_mfa(AccountId, UserId, TaskId) ->
+    lager:debug("In ecron_mfa"),
+    [Pid] = gproc:lookup_pids({'p', 'l', 'broadcast_manager'}),
+    gen_listener:call(Pid, {'new_task', 0, AccountId, UserId, TaskId}).
+
+normalize_field(<<"*">>) -> '*';
+normalize_field(Value) -> wh_util:to_integer(Value).
+
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -94,7 +109,7 @@ init([]) ->
 %% @end
 %%--------------------------------------------------------------------
 
-handle_call({'new_task', AccountId, UserId, TaskId}, _From, State) ->
+handle_call({'new_task', 0, AccountId, UserId, TaskId}, _From, State) ->
     #state{tasks=Tasks} = State,
     case dict:find(TaskId, Tasks) of
         {'ok', _Pid} -> 
@@ -105,14 +120,65 @@ handle_call({'new_task', AccountId, UserId, TaskId}, _From, State) ->
             {'reply', 'ok', State#state{tasks=dict:store(TaskId, Pid, Tasks)}}
     end;
 
+handle_call({'new_task', 1, AccountId, UserId, TaskId}, _From, State) ->
+    AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
+    {'ok', TaskDoc} = couch_mgr:open_cache_doc(AccountDb, TaskId),
+    Arg = wh_json:get_value(<<"schedulerarg">>, TaskDoc),
+    [Part1, Part2] = binary:split(Arg, <<" ">>),
+    [Y,Mo,D] = binary:split(Part1, <<"-">>, [global]),
+    [H,Mi,S] = binary:split(Part2, <<":">>, [global]),
+
+    Date = {wh_util:to_integer(Y), wh_util:to_integer(Mo), wh_util:to_integer(D)},
+    Time = {wh_util:to_integer(H), wh_util:to_integer(Mi), wh_util:to_integer(S)},
+    case ecron:insert({Date, Time}, {?MODULE, ecron_mfa, [AccountId, UserId, TaskId]}) of
+        'ok' -> 
+            lager:debug("Create ecron entry successfully"),
+            {'reply', 'ok', State};
+        {'error', Reason} ->
+            lager:debug("Create ecron entry failed, reason is ~p", [Reason]),
+            {'reply', {'error', <<"Create cron entry failed, ", (wh_util:to_binary(Reason))/binary>>}, State}
+    end;
+
+
+handle_call({'new_task', 2, AccountId, UserId, TaskId}, _From, State) ->
+    AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
+    {'ok', TaskDoc} = couch_mgr:open_cache_doc(AccountDb, TaskId),
+    Arg = wh_json:get_value(<<"schedulerarg">>, TaskDoc),
+    Dom = normalize_field(wh_json:get_value(<<"DayOfMonth">>, Arg)),
+    Dow = normalize_field(wh_json:get_value(<<"DayOfWeek">>, Arg)),
+    Hour = wh_json:get_integer_value(<<"Hour">>, Arg),
+    Minute = wh_json:get_integer_value(<<"Minute">>, Arg),
+
+    lager:debug("Creating ecron entry ~p", [{{'*', '*', Dom, Dow}, {Hour, Minute, 0}}]),
+    case ecron:insert({{'*', '*', Dom, Dow}, {Hour, Minute, 0}}
+                ,{?MODULE, ecron_mfa, [AccountId, UserId, TaskId]}) of
+        'ok' -> 
+            lager:debug("Create ecron entry successfully"),
+            {'reply', 'ok', State};
+        {'error', Reason} ->
+            lager:debug("Create ecron entry failed, reason is ~p", [Reason]),
+            {'reply', {'error', <<"Create cron entry failed, ", (wh_util:to_binary(Reason))/binary>>}, State}
+    end;
+
 handle_call({'del_task', TaskId}, _From, State) ->
     #state{tasks=Tasks} = State,
+
+    lists:foreach(
+            fun(Job) ->
+                case Job of
+                    {job, {_, Id}, {{_M, _F, [_AccountId, _UserId, TaskId]}, _}, _, _, _} -> 
+                        ecron:delete(Id);
+                    _ -> 
+                        lager:debug("Job ~p", [Job])
+                end
+            end, ecron:list()),
+
     case dict:find(TaskId, Tasks) of
         {'ok', Pid} ->
             gen_listener:cast(Pid, 'stop'),
             {'reply', 'ok', State#state{tasks=dict:erase(TaskId, Tasks)}};
         _Else ->
-            {'reply', {'error', 'not_found'}, State}
+            {'reply', 'ok', State}
     end;
 
 handle_call({'get_server', TaskId}, _From, State) ->
@@ -184,7 +250,7 @@ handle_event(JObj, _State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
-    lager:debug("outbound_call_manager terminating: ~p", [_Reason]).
+    lager:debug("broadcast_manager terminating: ~p", [_Reason]).
 
 %%--------------------------------------------------------------------
 %% @private

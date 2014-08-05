@@ -25,6 +25,7 @@
 start_link() ->
     _ = start_deps(),
     _ = declare_exchanges(),
+    {ok, _} = ecron:add_event_handler(broadcast_ecron_event_handler, []),
     broadcast_sup:start_link().
 
 %%--------------------------------------------------------------------
@@ -54,14 +55,19 @@ stop() ->
 %% Ensures that all dependencies for this app are already running
 %% @end
 %%--------------------------------------------------------------------
+
 -spec start_deps() -> 'ok'.
 start_deps() ->
     whistle_apps_deps:ensure(?MODULE), % if started by the whistle_controller, this will exist
+    'ok' = wh_util:ensure_mnesia_ondisc(),
     _ = [wh_util:ensure_started(App) || App <- ['crypto'
                                                 ,'lager'
                                                 ,'whistle_amqp'
                                                 ,'whistle_couch'
+                                                ,'mnesia'
                                                ]],
+    'ok' = ecron:install(),
+    _ = wh_util:ensure_started('ecron'),
     'ok'.
 
 %%--------------------------------------------------------------------
