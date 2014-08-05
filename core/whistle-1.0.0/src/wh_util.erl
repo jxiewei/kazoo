@@ -58,7 +58,8 @@
 -export([pad_binary/3, join_binary/1, join_binary/2]).
 -export([a1hash/3, floor/1, ceiling/1]).
 
--export([current_tstamp/0, ensure_started/1]).
+-export([current_tstamp/0, ensure_started/1
+        ,ensure_mnesia_ondisc/0]).
 -export([gregorian_seconds_to_unix_seconds/1, unix_seconds_to_gregorian_seconds/1
          ,pretty_print_datetime/1
          ,decr_timeout/2
@@ -842,6 +843,12 @@ ensure_started(App) when is_atom(App) ->
     case application:start(App) of
         'ok' -> 'ok';
         {'error', {'already_started', App}} -> 'ok';
+        E -> E
+    end.
+ensure_mnesia_ondisc() ->
+    case mnesia:create_schema([node()]) of 
+        'ok' -> 'ok';
+        {'error', {_, {'already_exists', _}}} -> 'ok';
         E -> E
     end.
 
