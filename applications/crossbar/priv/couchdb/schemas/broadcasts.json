@@ -18,12 +18,14 @@
         "required":"true",
         "type":"integer",
         "minimum":0,
-        "maximum":2,
+        "maximum":2
       },
       "schedulearg":{
         "name":"Scheduler argument",
         "description":"Arguments of scheduler",
         "type":"object",
+        "default":{
+        }
       },
       "media_id":{
          "name":"Media (ID)",
@@ -36,24 +38,22 @@
          "name":"Presenters",
          "description":"Defines the presenters of the broadcast",
          "type":"array",
-         "uniqueItems":true,
-         "items":[
-            {
-                "type":"string"
-            }
-         ],
+         "items":{
+            "type":"string"
+         },
+         "default":[
+         ] 
       },
       "listeners":{
          "name":"Listeners",
          "description":"Defines the listeners of the broadcast",
          "required":"true",
          "type":"array",
-         "uniqueItems":true,
-         "items":[
-            {
-                "type":"string"
-            }
-         ],
-      },
+         "items": {
+            "type":"string"
+         },
+         "default":[
+         ]
+      }
    }
 }
