@@ -1,0 +1,19 @@
+{
+   "_id": "_design/broadcasts",
+   "language": "javascript",
+   "views": {
+       "listing_tasklogs": {
+           "map": "function (doc) {if (doc.pvt_deleted || doc.pvt_type != 'broadcast_tasklog') return; emit(doc.pvt_created, {id: doc._id, task_id: doc.task_id, start_tstamp: doc.start_tstamp, end_tstamp: doc.end_tstamp, total_count: doc.total_count, success_count: doc.success_count, failed_count: doc.failed_count, offline_count: doc.offline_count, interrupted_count: doc.interrupted_count, exception_count: doc.exception_count, owner_id: doc.owner_id})}"
+       },
+       "listing_tasklogs_by_taskid": {
+           "map": "function (doc) {if (doc.pvt_deleted || doc.pvt_type != 'broadcast_tasklog') return; emit([doc.pvt_created, doc.task_id], {id: doc._id, task_id: doc.task_id, start_tstamp: doc.start_tstamp, end_tstamp: doc.end_tstamp, total_count: doc.total_count, success_count: doc.success_count, failed_count: doc.failed_count, offline_count: doc.offline_count, interrupted_count: doc.interrupted_count, exception_count: doc.exception_count, owner_id: doc.owner_id})}"
+       },
+
+       "listing_partylogs": {
+           "map": "function (doc) {if (doc.pvt_deleted || doc.pvt_type != 'broadcast_partylog') return; emit(doc.pvt_created, {id: doc._id, tasklog_id: doc.pvt_tasklog_id, call_id: doc.call_id, caller_id_number: doc.caller_id_number, callee_id_number: doc.callee_id_number, start_tstamp: doc.start_tstamp, end_tstamp: doc.end_tstamp,hangup_tstamp: doc.hangup_tstamp,  status: doc.status, hangup_cause: doc.hangup_cause, owner_id: doc.owner_id})}"
+       },
+       "listing_partylogs_by_tasklog_id": {
+   "map": "function (doc) {if (doc.pvt_deleted || doc.pvt_type != 'broadcast_partylog') return; emit([doc.pvt_created, doc.pvt_tasklog_id], {id: doc._id, call_id: doc.call_id, caller_id_number: doc.caller_id_number, callee_id_number: doc.callee_id_number, start_tstamp: doc.start_tstamp, end_tstamp: doc.end_tstamp,hangup_tstamp: doc.hangup_tstamp,  status: doc.status, hangup_cause: doc.hangup_cause, owner_id: doc.owner_id})}"
+       }
+   }
+}
