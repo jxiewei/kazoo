@@ -104,11 +104,10 @@
                "name":"Numbers (moderator)",
                "description":"Defines the conference number(s) for moderators",
                "type":"array",
-               "items":[
-                  {
-                     "type":"string"
-                  }
-               ],
+               "items":
+               {
+                    "type":"string"
+               },
                "default":[
 
                ]
@@ -134,11 +133,10 @@
          "description":"Defines conference numbers that can be used by members or moderators",
          "type":"array",
          "name":"Conference Numbers",
-         "items":[
-            {
-               "type":"string"
-            }
-         ],
+         "items":
+         {
+            "type":"string"
+         },
          "default":[
 
          ]
