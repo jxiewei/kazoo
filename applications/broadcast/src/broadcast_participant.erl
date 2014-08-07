@@ -54,7 +54,7 @@ stop(Pid) ->
 status(Pid) ->
     gen_listener:call(Pid, 'status').
 
-handle_call(_Request, _From, #state{status=Status}=State) ->
+handle_call('status', _From, #state{status=Status}=State) ->
     {'reply', {'ok', Status}, State};
 
 handle_call(_Request, _From, State) ->
