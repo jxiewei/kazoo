@@ -20,15 +20,13 @@
          ,validate/1, validate/2
          ,validate/3
          ,put/1, post/2
-         ,post/3 ,delete/2
+         ,delete/2
         ]).
 
 -include("../crossbar.hrl").
 
 -define(CB_LIST, <<"broadcasts/crossbar_listing">>).
 -define(STATUS_PATH_TOKEN, <<"status">>).
--define(KICKOFF_PATH_TOKEN, <<"kickoff">>).
--define(END_PATH_TOKEN, <<"end">>).
 
 
 %%%===================================================================
@@ -58,11 +56,8 @@ allowed_methods() ->
 allowed_methods(_) ->
     [?HTTP_GET, ?HTTP_POST, ?HTTP_DELETE].
 allowed_methods(_, ?STATUS_PATH_TOKEN) ->
-    [?HTTP_GET];
-allowed_methods(_, ?KICKOFF_PATH_TOKEN) ->
-    [?HTTP_POST];
-allowed_methods(_, ?END_PATH_TOKEN) ->
-    [?HTTP_POST].
+    [?HTTP_GET].
+
 %%--------------------------------------------------------------------
 %% @public
 %% @doc
@@ -78,10 +73,6 @@ resource_exists() ->
 resource_exists(_) ->
     true.
 resource_exists(_, ?STATUS_PATH_TOKEN) ->
-    true;
-resource_exists(_, ?KICKOFF_PATH_TOKEN) ->
-    true;
-resource_exists(_, ?END_PATH_TOKEN) ->
     true.
 
 %%--------------------------------------------------------------------
@@ -114,42 +105,9 @@ validate(#cb_context{req_verb = ?HTTP_GET}=Context, Id, ?STATUS_PATH_TOKEN) ->
             crossbar_util:response(wh_json:from_list(Status), Context1);
         _ ->
             crossbar_util:response('error', <<"broadcast not started">>, 500, Context1)
-    end;
-
-validate(#cb_context{req_verb = ?HTTP_POST}=Context, Id, ?KICKOFF_PATH_TOKEN) ->
-    Context1 = load_broadcast(Id, Context),
-    AccountId = cb_context:account_id(Context1),
-    {'ok', AuthDoc} = couch_mgr:open_cache_doc(?TOKEN_DB, cb_context:auth_token(Context1)),
-    UserId = wh_json:get_value(<<"owner_id">>, AuthDoc),
-
-    case broadcast_task:start(AccountId, UserId, Id) of
-        'ok' -> 
-            lager:debug("broadcast task(~p) start successfully.", [Id]),
-            crossbar_util:response_202(<<"processing request">>, Context1);
-        _Reason ->
-            lager:debug("broadcast task(~p) start failed, reason ~p", [Id, _Reason]),
-            crossbar_util:response('error', <<"start failed">>, 500, Context1)
-    end;
-
-validate(#cb_context{req_verb = ?HTTP_POST}=Context, Id, ?END_PATH_TOKEN) ->
-    Context1 = load_broadcast(Id, Context),
-    case broadcast_task:stop(Id) of
-        'ok' -> 
-            lager:debug("broadcast task(~p) stopped successfully", [Id]),
-            Context1;
-        _Reason ->
-            lager:debug("broadcast task(~p) stopped failed, reason ~p", [Id, _Reason]),
-            crossbar_util:response('error', <<"stop failed">>, 500, Context1)
     end.
 
 -spec post(#cb_context{}, path_token()) -> #cb_context{}.
-
-post(Context, _Id, ?KICKOFF_PATH_TOKEN) -> 
-    Context;
-
-post(Context, _Id, ?END_PATH_TOKEN) ->
-    Context.
-
 post(Context, _) ->
     crossbar_doc:save(Context).
 

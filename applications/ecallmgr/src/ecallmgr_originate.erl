@@ -52,7 +52,7 @@
 -define(QUEUE_OPTIONS, []).
 -define(CONSUME_OPTIONS, []).
 
--define(ORIGINATE_PARK, <<"set_zombie_exec &park()">>).
+-define(ORIGINATE_PARK, <<"&park()">>).
 -define(ORIGINATE_EAVESDROP, <<"eavesdrop">>).
 -define(REPLY_TIMEOUT, 5000).
 
@@ -480,6 +480,7 @@ get_originate_action(<<"ivrcall">>, JObj) ->
         ,wh_json:get_value(<<"Text">>, Data)
         ,"' inline"
         ]);
+
 
 get_originate_action(<<"bridge">>, JObj) ->
     lager:debug("got originate with action bridge"),

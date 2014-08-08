@@ -129,7 +129,7 @@ handle_cast('init', State) ->
             {'noreply', State#state{obcall=ObCall, obid=ObId, status='proceeding'}};
         {'error', _Reason} ->
             lager:error("Call broadcast participant failed"),
-           {'stop', 'normal', State#state{status='failed'}};
+           {'noreply', State#state{status='failed'}};
         _Else ->
            {'noreply', State}
     end;
@@ -182,14 +182,10 @@ reason_to_final_state({'shutdown', _}) -> 'interrupted';
 reason_to_final_state(_) -> 'exception'.
 
 terminate(Reason, State) ->
-    #state{obcall=ObCall, status=Status} = State, 
+    #state{obcall=Call, status=Status} = State, 
     FinalState = case is_final_state(Status) of
         'true' -> Status;
         'false' -> reason_to_final_state(Reason)
-    end,
-    Call = case ObCall of
-        'undefined' -> State#state.call;
-        _Else -> _Else
     end,
     PartyLog = #partylog{
         tasklogid='undefined'
