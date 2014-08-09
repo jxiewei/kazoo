@@ -45,11 +45,10 @@
                "name":"Numbers (member)",
                "description":"Defines the conference number(s) for members",
                "type":"array",
-               "items":[
+               "items":
                   {
                      "type":"string"
-                  }
-               ],
+                  },
                "default":[
 
                ]

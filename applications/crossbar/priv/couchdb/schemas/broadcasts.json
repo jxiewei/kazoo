@@ -7,18 +7,30 @@
       "name":{
          "name":"Name",
          "description":"A friendly name for the broadcast task",
-         "required":"true",
+         "required":true,
          "type":"string",
          "minLength":1,
          "maxLength":128
       },
+      "type":{
+        "name":"Broadcast type",
+        "description":"The type of broadcast",
+        "required":true,
+        "type":"string",
+        "enum":["file", "recording"]
+      },
+      "media_id":{
+          "name":"Media (ID)",
+          "description":"The ID of the media object broadcasted to participants",
+          "type":"string",
+          "maxlength":128
+      },
       "scheduler":{
         "name":"Scheduler type",
         "description":"Type of scheduler, 0/1/2",
-        "required":"true",
+        "required":true,
         "type":"integer",
-        "minimum":0,
-        "maximum":2
+        "enum":[0, 1, 2]
       },
       "schedulearg":{
         "name":"Scheduler argument",
@@ -26,13 +38,6 @@
         "type":"object",
         "default":{
         }
-      },
-      "media_id":{
-         "name":"Media (ID)",
-         "description":"The ID of the media object broadcasted to participants",
-         "required":"true",
-         "type":"string",
-         "maxlength":128
       },
       "presenters":{
          "name":"Presenters",
@@ -47,7 +52,7 @@
       "listeners":{
          "name":"Listeners",
          "description":"Defines the listeners of the broadcast",
-         "required":"true",
+         "required":true,
          "type":"array",
          "items": {
             "type":"string"
@@ -55,5 +60,23 @@
          "default":[
          ]
       }
-   }
+   },
+
+    "anyOf" :[
+        {
+            "title": "media_id required if type is file",
+            "properties": {
+                "type": { "enum" : ["file"] },
+                "media_id": {"required":true}
+            }
+        },
+
+        {
+            "title":"schedulearg required",
+            "properties": {
+                "scheduler": {"enum" :[1, 2]},
+                "schedulearg":{"required":true}
+            }
+        }
+    ]
 }
