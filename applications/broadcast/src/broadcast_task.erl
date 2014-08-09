@@ -99,7 +99,7 @@ handle_info('check_exit_condition', State) ->
         'false' ->
             lager:info("No participant running, exiting broadcast task"),
             stop(TaskId),
-            {'stop', 'normal', State}
+            {'noreply', State}
     end;
 
 handle_info(_Msg, State) ->
