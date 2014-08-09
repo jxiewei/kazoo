@@ -107,11 +107,10 @@ handle_info(_Msg, State) ->
     {'noreply', State}.
 
 handle_cast('init', State) ->
-    #state{taskid=TaskId} = State,
+    #state{taskid=TaskId, task=Task} = State,
     put('callid', TaskId),
     lager:debug("Initializing broadcast task ~p", [TaskId]),
-    #state{task=Task} = State,
-    
+
     Moderators = wh_json:get_value(<<"presenters">>, Task),
     Members = wh_json:get_value(<<"listeners">>, Task),
     lager:debug("presenters ~p, listeners ~p", [Moderators, Members]),
