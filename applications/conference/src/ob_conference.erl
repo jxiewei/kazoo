@@ -133,7 +133,10 @@ handle_cast('init', State) ->
 
     lists:foreach(fun(N) -> 
                     gen_listener:cast(self(), {'start_participant', moderator, wh_util:to_binary(N)}) 
-                  end, Moderators ++ Members),
+                  end, Moderators),
+    lists:foreach(fun(N) -> 
+                    gen_listener:cast(self(), {'start_participant', member, wh_util:to_binary(N)}) 
+                  end, Members),
     {'noreply', State};
 
 handle_cast({'start_participant', _Type, Number},
