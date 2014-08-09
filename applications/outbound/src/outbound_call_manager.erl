@@ -173,8 +173,10 @@ handle_event(JObj, State) ->
     case whapps_util:get_event_type(JObj) of
         {<<"call_event">>, <<"CHANNEL_BRIDGE">>} ->
             Id = wh_json:get_value([<<"Custom-Channel-Vars">>, <<"OutBound-ID">>], JObj),
-            {'ok', Pid} = dict:find(Id, State#state.calls),
-            gen_listener:cast(Pid, {'channel_bridged', JObj});
+            case dict:find(Id, State#state.calls) of
+                {'ok', Pid} -> gen_listener:cast(Pid, {'channel_bridged', JObj});
+                _ -> 'ok'
+            end;
         {_Else, _Info} ->
             lager:debug("received channel event ~p", [JObj])
     end,
