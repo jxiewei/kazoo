@@ -134,6 +134,7 @@ handle_search_error(Conference, Call, Srv) ->
             conf_participant:set_conference(Conference, Srv),
             conf_participant:join_local(Srv),
             wait_for_creation(Conference)
+            %%FIXME: Here it's a bug that the first participant not played entry-prompt.
     catch
         'exit':{{'shutdown', {'server_initiated_close', 403, <<"ACCESS_REFUSED", _/binary>>}}, _} ->
             lager:debug("conference queue ~s is exclusive, waiting for conference creation by initial participant", [Queue]),
