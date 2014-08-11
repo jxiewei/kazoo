@@ -28,6 +28,7 @@
 -define(CONSUME_OPTIONS, []).
 -define(DEVICES_VIEW, <<"devices/listing_by_owner">>).
 -define(EXIT_COND_CHECK_INTERVAL, 5).
+-define(ORIGINATE_RATE, 10).
 
 -record(state, {account_id :: binary() 
                 ,userid :: binary()
@@ -131,15 +132,14 @@ handle_cast('init', State) ->
     Moderators = wh_json:get_value([<<"moderator">>, <<"numbers">>], Conference),
     Members = wh_json:get_value([<<"member">>, <<"numbers">>], Conference),
 
-    lists:foreach(fun(N) -> 
-                    gen_listener:cast(self(), {'start_participant', moderator, wh_util:to_binary(N)}) 
-                  end, Moderators),
-    lists:foreach(fun(N) -> 
-                    gen_listener:cast(self(), {'start_participant', member, wh_util:to_binary(N)}) 
-                  end, Members),
+    gen_listener:cast(self(), {'start_participant', moderator, Moderators}),
+    gen_listener:cast(self(), {'start_participant', member, Members}),
     {'noreply', State};
 
-handle_cast({'start_participant', _Type, Number},
+
+handle_cast({'start_participant', _Type, []}, State) ->
+    {'noreply', State};
+handle_cast({'start_participant', _Type, [_Number|Others]},
                             #state{account_id=AccountId
                                 ,account=Account
                                 ,userid=UserId
@@ -148,6 +148,7 @@ handle_cast({'start_participant', _Type, Number},
                                 ,parties=Parties
                                 }=State) ->
 
+    Number = wh_util:to_binary(_Number),
     lager:debug("Starting conference participant ~p", [Number]),
     AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
     CallerId = wh_json:get_value([<<"caller_id">>, <<"external">>], User),
@@ -169,6 +170,7 @@ handle_cast({'start_participant', _Type, Number},
                ,whapps_call:new()),
 
     {'ok', Pid} = ob_conf_participant:start(Conference, Call),
+    timer:apply_after(1000/?ORIGINATE_RATE, gen_listener, cast, [self(), {'start_participant', _Type, Others}]),
     {'noreply', State#state{parties=dict:store(Number, #party{pid=Pid, type=_Type, partylog='undefined'}, Parties)}};
 
 handle_cast({'party_exited', PartyLog}, State) ->
