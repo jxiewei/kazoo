@@ -327,7 +327,7 @@ init([Id, Endpoint, Call, From]) ->
     FSNode = wh_util:to_atom(<<"freeswitch@", Host/binary>>, 'true'),
     C = whapps_call:exec([
             fun(C) -> whapps_call:set_switch_nodename(FSNode, C) end
-            ,fun(C) -> whapps_call:set_switch_hostname(FSNode, C) end], Call),
+            ,fun(C) -> whapps_call:set_switch_hostname(Host, C) end], Call),
     {'ok', #state{outboundid=Id
                  ,mycall=C
                  ,myendpoint=Endpoint
