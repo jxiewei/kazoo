@@ -24,6 +24,7 @@
 -define('SERVER', ?MODULE).
 -define(DEFAULT_ORIGINATE_TIMEOUT, 30000).
 -define(DEFAULT_ANSWER_TIMEOUT, 30000).
+-define(DEVICES_VIEW, <<"devices/listing_by_owner">>).
 
 -define(RESPONDERS, []).
 -define(QUEUE_NAME, <<>>).
@@ -108,7 +109,7 @@ start(Call) ->
     {'ok', Id} = outbound_call_manager:start('undefined', Call),
     case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
         {'ok', Ret} -> {'ok', Id, Ret};
-        _Return ->
+        _Return -> 
             lager:debug("outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
             stop(Id),
             _Return
@@ -151,7 +152,7 @@ channel_answered(UUID) ->
     {'ok', [Resp|_]} ->
         {'ok', wh_json:get_value([<<"Channels">>, UUID, <<"Answered">>], Resp)};
     _R ->
-        lager:notice("failed to get channel answer state of ~s: ~p", [UUID, _R]),
+        lager:notice("failed to get channel information ~p", [_R]),
         {'error'}
     end.
 
@@ -162,13 +163,13 @@ channel_control_queue(UUID) ->
     case whapps_util:amqp_pool_request(Req
                                        ,fun wapi_call:publish_channel_status_req/1
                                        ,fun wapi_call:channel_status_resp_v/1
-                                       ,20000)
+                                      )
     of
         {'ok', Resp} ->
             lager:debug("channel status ~p", [Resp]),
             wh_json:get_value(<<"Control-Queue">>, Resp);
         {'error', _E} ->
-            lager:error("failed to get channel controll queue of ~s: ~p", [UUID, _E]),
+            lager:error("failed to get channel status of '~s': '~p'", [UUID, _E]),
             'undefined'
     end.
 
@@ -182,13 +183,37 @@ handle_cast('originate_outbound_call', State) ->
     put('callid', OutboundId),
     lager:debug("Originating outbound call"),
     AccountId = whapps_call:account_id(Call),
+    UserId = whapps_call:authorizing_id(Call),
+
+%%
+    AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
+    ViewOptions = [{'key', UserId}],
+    case couch_mgr:get_results(AccountDb, ?DEVICES_VIEW, ViewOptions) of
+        {'ok', JObjs} ->
+            SipDevices = lists:filter(fun(Obj) ->
+                                        {'ok', Dev} = couch_mgr:open_cache_doc(AccountDb, wh_json:get_value([<<"value">>, <<"id">>], Obj)),
+                                        wh_json:get_value(<<"device_type">>, Dev) =:= <<"softphone">>
+                                      end, JObjs),
+            DeviceId = wh_json:get_value(<<"id">>, lists:nth(1, SipDevices));
+        {'error', _R} ->
+            DeviceId = 'undefined',
+            lager:notice("softphone device owned by ~p not found", [UserId])
+    end,
+
+    {'ok', RequestDevice} = couch_mgr:open_cache_doc(AccountDb, DeviceId),
+    %CallerId = wh_json:get_value([<<"caller_id">>, <<"external">>], User),
+    %Realm = wh_json:get_ne_value(<<"realm">>, Account),
+    FromUser = wh_json:get_value([<<"sip">>, <<"username">>], RequestDevice),
 
     CCVs = [{<<"Account-ID">>, AccountId}
             ,{<<"Retain-CID">>, <<"true">>}
             ,{<<"Inherit-Codec">>, <<"false">>}
-            ,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
-            ,{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
+            %,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
+            %,{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
+            ,{<<"Authorizing-Type">>, <<"device">>}
+            ,{<<"Authorizing-ID">>, DeviceId}
             ,{<<"OutBound-ID">>, OutboundId}
+            ,{<<"Zombie-Exec">>, <<"true">>}
            ],
 
     [Number, _] = binary:split(whapps_call:to(Call), <<"@">>),
@@ -216,12 +241,12 @@ handle_cast('originate_outbound_call', State) ->
                  ,{<<"Request">>, whapps_call:request(Call)}
                  ,{<<"From">>, whapps_call:from(Call)}
                  ,{<<"Dial-Endpoint-Method">>, <<"single">>}
-                 ,{<<"Continue-On-Fail">>, 'false'}
+                 ,{<<"Continue-On-Fail">>, 'true'}
                  ,{<<"Server-ID">>, Q}
                  ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
                  ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>
                                                      ,<<"Authorizing-ID">>, <<"Authorizing-Type">>
-                                                     ,<<"OutBound-ID">>]}                                         
+                                                     ,<<"OutBound-ID">>, <<"Zombie-Exec">>]}                                         
                  | wh_api:default_headers(<<"resource">>, <<"originate_req">>, ?APP_NAME, ?APP_VERSION)                                                                          
                 ]),
 
@@ -229,13 +254,16 @@ handle_cast('originate_outbound_call', State) ->
     {'noreply', State#state{status='initial'}};
 
 handle_cast({'update_callid', CallId}, State) ->
-    #state{outboundid=OutboundId} = State,
     CtrlQ = channel_control_queue(CallId),
     lager:debug("New callid ~p, new ctrl queue ~p", [CallId, CtrlQ]),
     Call = whapps_call:exec([
                         fun(C) -> whapps_call:set_call_id(CallId, C) end
                         ,fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end]
                         ,State#state.mycall),
+    case State#state.exiting of
+        'true' -> gen_listener:cast(self(), 'stop');
+        _-> 'ok'
+    end,
     Props = [{'callid', CallId},{'restrict_to', [<<"CHANNEL_DESTROY">>]}], 
     gen_listener:add_binding(self(), 'call', Props),
     case channel_answered(CallId) of 
@@ -252,22 +280,26 @@ handle_cast({'update_callid', CallId}, State) ->
             {'noreply', State#state{mycall=Call, status='proceeding'}};
         _ ->
             State#state.from ! {'outbound_call_originate_failed', 'channel_not_exist'},
-            stop(OutboundId),
-            {'noreply', State}
+            {'stop', {'shutdown', 'outbound_call_originate_failed'}, State}
     end;
 
-handle_cast({'originate_success', _JObj}, State) ->
+%handle_cast({'originate_success', JObj}, State=#state{myendpoint=Endpoint}) when Endpoint =/= 'undefined' ->
+%    lager:debug("outbound call(to endpoint) originate successfully"),
+%    CallId = wh_json:get_value(<<"Call-ID">>, JObj),
+%    gen_listener:cast(self(), {'update_callid', CallId}),
+%    {'noreply', State};
+
+handle_cast({'originate_success', JObj}, State=#state{myendpoint=Endpoint}) ->
+    lager:debug("outbound call originate successfully"),
     %CallId = wh_json:get_value(<<"Call-ID">>, JObj),
     %gen_listener:cast(self(), {'update_callid', CallId}),
     {'noreply', State};
-    
+
 %originate command failed
 handle_cast({'originate_fail', _JObj}, State) ->
-    #state{outboundid=OutboundId} = State,
     lager:debug("outbound call originate failed"),
     State#state.from ! {'outbound_call_originate_failed', 'originate_fail'},
-    stop(OutboundId),
-    {'noreply', State};
+    {'stop', {'shutdown', 'successful'}, State};
 
 handle_cast({'channel_bridged', JObj}, State) ->
     OtherLegCallId = wh_json:get_binary_value(<<"Other-Leg-Call-ID">>, JObj),
@@ -282,34 +314,33 @@ handle_cast({'channel_answered', _JObj}, State) ->
 
 %callid has updated, but channel is destroyed after.
 handle_cast({'channel_destroy', _JObj}, State) ->
-    #state{outboundid=OutboundId} = State,
     lager:debug("outbound call destroyed"),
     case State#state.status of
         'proceeding' -> State#state.from ! {'outbound_call_rejected', 'channel_destroyed'};
         _Else -> 'ok'
     end,
-    stop(OutboundId),
-    {'noreply', State};
+    {'stop', 'normal', State};
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
+    lager:debug("jerry -- is_consuming ~p", [_IsConsuming]),
     {'noreply', State};
 
 handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
+    lager:debug("jerry -- created_queue ~p", [_QueueName]),
     gen_listener:cast(self(), 'originate_outbound_call'),
     {'noreply', State#state{myq=_QueueName}};
 
 
-%% TODO: Do not exit immediately to hangup calls ringed already but not answered yet.
-%% to avoid ghost call. Issue here is for voip calls, we haven't got callid yet.
-%% Voip calls CHANNEL_BRIDGE occurs only after callee answered.
+%% Do not exit immediately to leave time to sending hangup command, 
+%% to avoid ghost call.
 handle_cast('stop', #state{mycall=Call}=State) ->
     lager:debug("Trying to stop outbound call"),
     case whapps_call:control_queue(Call) of
         'undefined' -> 
-            {'stop', 'normal', State};
+            {'noreply', State#state{exiting='true'}};
         _ ->
             whapps_call_command:hangup(Call),
-            {'stop', 'normal', State}
+            {'stop', {'shutdown', 'normal'}, State}
     end;
 
 handle_cast(_Cast, State) ->
@@ -326,7 +357,9 @@ handle_call('status', _From, State) ->
 handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.
 
-handle_event(JObj, State) ->
+%handle_event(JObj, State=#state{myendpoint=Endpoint}) when Endpoint =/= 'undefined' ->
+handle_event(JObj, State=#state{myendpoint=Endpoint})  ->
+    lager:debug("Received event ~p", [JObj]),
     case whapps_util:get_event_type(JObj) of
         {<<"resource">>, <<"originate_resp">>} ->
             gen_listener:cast(State#state.server, {'originate_success', JObj});
