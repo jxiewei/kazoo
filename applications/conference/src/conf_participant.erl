@@ -43,10 +43,7 @@
 
 -define('SERVER', ?MODULE).
 
--define(RESPONDERS, [{{?MODULE, 'relay_amqp'}
-                     ,[{<<"call_event">>, <<"*">>}]
-                     }
-                    ,{{?MODULE, 'handle_participants_event'}
+-define(RESPONDERS, [{{?MODULE, 'handle_participants_event'}
                      ,[{<<"conference">>, <<"participants_event">>}]
                      }
                     ,{{?MODULE, 'handle_conference_error'}
@@ -261,6 +258,12 @@ handle_cast('hangup', Participant) ->
     {'noreply', Participant};
 handle_cast({'add_consumer', C}, #participant{call_event_consumers=Cs}=P) ->
     lager:debug("adding call event consumer ~p", [C]),
+    case Cs of
+        [] -> 
+            lager:debug("adding call_event binding for the first consumer"),
+            gen_listener:add_responder(self(), {?MODULE, 'relay_amqp'}, [{<<"call_event">>, <<"*">>}]);
+        _ -> 'ok'
+    end,
     link(C),
     {'noreply', P#participant{call_event_consumers=[C|Cs]}};
 handle_cast({'remove_consumer', C}, #participant{call_event_consumers=Cs}=P) ->
