@@ -170,7 +170,7 @@ handle_cast({'start_participant', _Type, [_Number|Others]},
                ,whapps_call:new()),
 
     {'ok', Pid} = ob_conf_participant:start(Conference, Call),
-    timer:apply_after(1000 div ?ORIGINATE_RATE, gen_listener, cast, [self(), {'start_participant', _Type, Others}]),
+    timer:apply_after(wh_util:to_integer(1000/?ORIGINATE_RATE), gen_listener, cast, [self(), {'start_participant', _Type, Others}]),
     {'noreply', State#state{parties=dict:store(Number, #party{pid=Pid, type=_Type, partylog='undefined'}, Parties)}};
 
 handle_cast({'party_exited', PartyLog}, State) ->
