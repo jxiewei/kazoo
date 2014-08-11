@@ -195,7 +195,7 @@ handle_cast({'party_exited', PartyLog}, State) ->
 
 handle_cast({'stop', Reason='no_party'}, State) ->
     lager:debug("Stopping conference, reason is ~p", [Reason]),
-    {'stop', Reason, State};
+    {'stop', {'shutdown', Reason}, State};
 
 handle_cast({'stop', Reason}, State) ->
     lager:debug("Stopping conference, reason is ~p", [Reason]),
