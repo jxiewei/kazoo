@@ -1,3 +1,5 @@
+%%NOTE: In this mod, we doesn't consume_all_events, to reduce amqp message load.
+%%So whapps_call_command:b_* API can't be used here, they relys on various call events.
 -module(ob_conf_participant).
 
 -behaviour(gen_listener).
