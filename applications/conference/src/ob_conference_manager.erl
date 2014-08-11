@@ -81,7 +81,12 @@ handle_call({'stop_conference', ConferenceId, Reason}, _From, State) ->
     case dict:find(ConferenceId, Conferences) of
         {'ok', Pid} ->
             gen_listener:cast(Pid, {'stop', Reason}),
-            {'reply', 'ok', State#state{conferences=dict:erase(ConferenceId, Conferences)}};
+            case Reason of
+                'no_party' -> 
+                    {'reply', 'ok', State#state{conferences=dict:erase(ConferenceId, Conferences)}};
+                _ ->
+                    {'reply', 'ok', State}
+            end;
         _Else ->
             lager:debug("Conference ~p already stopped", [ConferenceId]),
             {'reply', 'ok', State}
