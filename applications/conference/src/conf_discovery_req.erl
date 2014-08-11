@@ -165,6 +165,8 @@ wait_for_creation(Conference, After) ->
 
 -spec handle_search_resp(wh_json:object(), whapps_conference:conference(), whapps_call:call(), pid()) -> 'ok'.
 handle_search_resp(JObj, Conference, Call, Srv) ->
+    Queue = whapps_conference:id(Conference),
+    _ = amqp_util:queue_delete(Queue),
     MaxParticipants =  whapps_conference:max_participants(Conference),
     Participants = length(wh_json:get_value(<<"Participants">>, JObj, [])),
     case (MaxParticipants =/= 0) andalso (Participants >= MaxParticipants) of
