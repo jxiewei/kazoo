@@ -115,6 +115,7 @@
                                                ,<<"Switch-Hostname">>, <<"Switch-Nodename">>
                                                ,<<"Switch-URL">>, <<"Other-Leg-Call-ID">>
                                                ,<<"Realm">>, <<"Username">>, <<"Control-Queue">>
+                                               ,<<"Answered">>
                                               ]).
 -define(CHANNEL_STATUS_RESP_VALUES, [{<<"Event-Category">>, <<"call_event">>}
                                      ,{<<"Event-Name">>, <<"channel_status_resp">>}
