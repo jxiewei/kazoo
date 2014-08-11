@@ -138,40 +138,6 @@ set_listener(Id, ListenerPid) ->
         _Return -> _Return
     end.
 
-channel_answered(UUID) ->
-    case whapps_util:amqp_pool_collect([{<<"Fields">>, [<<"Answered">>]}
-                                        ,{<<"Call-ID">>, UUID}
-                                        |wh_api:default_headers(?APP_NAME, ?APP_VERSION)
-                                       ]
-                                       ,fun wapi_call:publish_query_channels_req/1
-                                       %,fun wapi_call:query_channels_resp_v/1
-                                       ,{'ecallmgr', 'true'}
-                                       ,20000)
-    of
-    {'ok', [Resp|_]} ->
-        {'ok', wh_json:get_value([<<"Channels">>, UUID, <<"Answered">>], Resp)};
-    _R ->
-        lager:notice("failed to get channel answer state of ~s: ~p", [UUID, _R]),
-        {'error'}
-    end.
-
-channel_control_queue(UUID) ->
-    Req = [{<<"Call-ID">>, wh_util:to_binary(UUID)}
-           | wh_api:default_headers(<<"shell">>, <<"0">>)
-          ],
-    case whapps_util:amqp_pool_request(Req
-                                       ,fun wapi_call:publish_channel_status_req/1
-                                       ,fun wapi_call:channel_status_resp_v/1
-                                       ,20000)
-    of
-        {'ok', Resp} ->
-            lager:debug("channel status ~p", [Resp]),
-            wh_json:get_value(<<"Control-Queue">>, Resp);
-        {'error', _E} ->
-            lager:error("failed to get channel controll queue of ~s: ~p", [UUID, _E]),
-            'undefined'
-    end.
-
 %% Callbacks
 handle_info(_Msg, State) ->
     lager:info("unhandled message: ~p", [_Msg]),
@@ -230,30 +196,35 @@ handle_cast('originate_outbound_call', State) ->
 
 handle_cast({'update_callid', CallId}, State) ->
     #state{outboundid=OutboundId} = State,
-    CtrlQ = channel_control_queue(CallId),
-    lager:debug("New callid ~p, new ctrl queue ~p", [CallId, CtrlQ]),
-    Call = whapps_call:exec([
+    case whapps_call_command:b_channel_status(CallId) of
+        {'ok', JObj} -> 
+            lager:debug("Got channel status response ~p", [JObj]),
+            CtrlQ = wh_json:get_value(<<"Control-Queue">>, JObj),
+            Answered = wh_json:get_value(<<"Answered">>, JObj),
+            lager:debug("New callid ~p, ctrl queue ~p, answered ~p", [CallId, CtrlQ, Answered]),
+            Call = whapps_call:exec([
                         fun(C) -> whapps_call:set_call_id(CallId, C) end
                         ,fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end]
                         ,State#state.mycall),
-    Props = [{'callid', CallId},{'restrict_to', [<<"CHANNEL_DESTROY">>]}], 
-    gen_listener:add_binding(self(), 'call', Props),
-    case channel_answered(CallId) of 
-        {'ok', 'true'} ->
-            %originate succeed and channel has answered.
-            State#state.from ! {'outbound_call_originated', Call},
-            State#state.from ! {'outbound_call_answered', Call},
-            {'noreply', State#state{mycall=Call, status='answered'}};
-        {'ok', 'false'} -> 
-            %originate succeed and channel has not answered.
-            Props1 = [{'callid', CallId},{'restrict_to', [<<"CHANNEL_ANSWER">>]}], 
-            gen_listener:add_binding(self(), 'call', Props1),
-            State#state.from ! {'outbound_call_originated', Call},
-            {'noreply', State#state{mycall=Call, status='proceeding'}};
-        _ ->
-            State#state.from ! {'outbound_call_originate_failed', 'channel_not_exist'},
+            Props = [{'callid', CallId},{'restrict_to', [<<"CHANNEL_DESTROY">>]}], 
+            gen_listener:add_binding(self(), 'call', Props),
+            case Answered of 
+                'true' ->
+                    %originate succeed and channel has answered.
+                    State#state.from ! {'outbound_call_originated', Call},
+                    State#state.from ! {'outbound_call_answered', Call},
+                    {'noreply', State#state{mycall=Call, status='answered'}};
+                _ -> 
+                    %originate succeed and channel has not answered.
+                    Props1 = [{'callid', CallId},{'restrict_to', [<<"CHANNEL_ANSWER">>]}], 
+                    gen_listener:add_binding(self(), 'call', Props1),
+                    State#state.from ! {'outbound_call_originated', Call},
+                    {'noreply', State#state{mycall=Call, status='proceeding'}}
+            end;
+        {'error', Reason} ->
+            lager:info("Failed to get channel status of ~p, reason is ~p", [CallId, Reason]),
             stop(OutboundId),
-            {'noreply', State}
+            {'noreply', State} 
     end;
 
 handle_cast({'originate_success', _JObj}, State) ->
