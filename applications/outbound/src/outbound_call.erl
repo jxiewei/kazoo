@@ -24,6 +24,7 @@
 -define('SERVER', ?MODULE).
 -define(DEFAULT_ORIGINATE_TIMEOUT, 30000).
 -define(DEFAULT_ANSWER_TIMEOUT, 30000).
+-define(DEFAULT_CTRLQ_TIMEOUT, 10000).
 
 -define(RESPONDERS, []).
 -define(QUEUE_NAME, <<>>).
@@ -56,7 +57,7 @@ wait_originate(Timeout) ->
         {'outbound_call_originated', Ret} -> {'ok', Ret};
         {'outbound_call_originate_failed', Ret} -> {'error', Ret};
         _E ->
-            lager:debug("jerry -- received other event ~p", [_E]),
+            lager:debug("Received other event ~p", [_E]),
             wait_originate(wh_util:decr_timeout(Timeout, Start))
     after
         Timeout -> {'error', 'timeout'}
@@ -69,6 +70,7 @@ wait_originate(Timeout) ->
 %% block caller and return when specified event occurs.
 wait_answer(Pid) ->
     wait_answer(Pid, ?DEFAULT_ANSWER_TIMEOUT).
+wait_answer(_Pid, After) when After =< 0 -> {'error', 'timeout'};
 wait_answer(Pid, After) ->
     Start = erlang:now(),
     case (catch status(Pid)) of
@@ -108,7 +110,7 @@ start(Call) ->
         {'ok', Ret} -> 
             {'ok', Pid, Ret};
         _Return ->
-            lager:debug("outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
+            lager:info("Outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
             stop(Pid),
             _Return
     end.
@@ -119,7 +121,7 @@ start(Endpoint, Call) ->
         {'ok', ObCall} -> 
             {'ok', Pid, ObCall};
         _Return -> 
-            lager:debug("outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
+            lager:info("Outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
             stop(Pid),
             _Return
     end.
@@ -130,6 +132,24 @@ stop(Pid) when is_pid(Pid) ->
 status(Pid) when is_pid(Pid) ->
     gen_listener:call(Pid, 'status').
 
+wait_control_queue(CallId) -> wait_control_queue(CallId, ?DEFAULT_CTRLQ_TIMEOUT).
+wait_control_queue(_CallId, After) when After =< 0 -> {'error', 'timeout'};
+wait_control_queue(CallId, After) ->
+    Start = erlang:now(),
+    case whapps_call_command:b_channel_status(CallId) of
+        {'ok', JObj} -> 
+            CtrlQ = wh_json:get_value(<<"Control-Queue">>, JObj),
+            Answered = wh_json:get_value(<<"Answered">>, JObj),
+            case CtrlQ of
+                'undefined' -> 
+                    timer:sleep(1000),
+                    wait_control_queue(CallId, whapps_util:decr_timeout(After, Start));
+                _ -> 
+                    {'ok', CtrlQ, Answered}
+            end;
+        _Else -> _Else
+    end.
+
 %% Callbacks
 handle_info(_Msg, State) ->
     lager:info("unhandled message: ~p", [_Msg]),
@@ -137,7 +157,6 @@ handle_info(_Msg, State) ->
 
 handle_cast('originate_outbound_call', State) ->
     #state{outboundid=OutboundId, mycall=Call, myq=Q} = State,
-    put('callid', OutboundId),
     lager:debug("Originating outbound call"),
     AccountId = whapps_call:account_id(Call),
 
@@ -188,12 +207,9 @@ handle_cast('originate_outbound_call', State) ->
 
 handle_cast({'update_callid', CallId}, State) ->
     #state{mycall=MyCall} = State,
-    case whapps_call_command:b_channel_status(CallId) of
-        {'ok', JObj} -> 
-            lager:debug("Got channel status response ~p", [JObj]),
-            CtrlQ = wh_json:get_value(<<"Control-Queue">>, JObj),
-            Answered = wh_json:get_value(<<"Answered">>, JObj),
-            lager:debug("New callid ~p, ctrl queue ~p, answered ~p", [CallId, CtrlQ, Answered]),
+    case wait_control_queue(CallId) of
+        {'ok', CtrlQ, Answered} -> 
+            lager:info("New callid ~p, ctrl queue ~p, answered ~p", [CallId, CtrlQ, Answered]),
             Call = whapps_call:exec([
                         fun(C) -> whapps_call:set_call_id(CallId, C) end
                         ,fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end]
@@ -213,7 +229,7 @@ handle_cast({'update_callid', CallId}, State) ->
                     {'noreply', State#state{mycall=Call, status='proceeding'}}
             end;
         {'error', Reason} ->
-            lager:info("Failed to get channel status of ~p, reason is ~p", [CallId, Reason]),
+            lager:info("Failed to get control queue of ~p, reason is ~p", [CallId, Reason]),
             gen_listener:cast(self(), 'stop'),
             {'noreply', State} 
     end;
@@ -225,24 +241,24 @@ handle_cast({'originate_success', _JObj}, State) ->
     
 %originate command failed
 handle_cast({'originate_fail', _JObj}, State) ->
-    lager:debug("outbound call originate failed"),
+    lager:info("Outbound call originate failed"),
     State#state.from ! {'outbound_call_originate_failed', 'originate_fail'},
     gen_listener:cast(self(), 'stop'),
     {'noreply', State};
 
 handle_cast({'channel_bridged', JObj}, State) ->
     OtherLegCallId = wh_json:get_binary_value(<<"Other-Leg-Call-ID">>, JObj),
-    lager:debug("outbound call bridged to ~p", [OtherLegCallId]),
+    lager:debug("Outbound call bridged to ~p", [OtherLegCallId]),
     gen_listener:cast(self(), {'update_callid', OtherLegCallId}),
     {'noreply', State};
 
 handle_cast({'channel_answered', _JObj}, State) ->
-    lager:debug("outbound call answered"),
+    lager:debug("Outbound call answered"),
     {'noreply', State#state{status='answered'}};
 
 %callid has updated, but channel is destroyed after.
 handle_cast({'channel_destroy', _JObj}, State) ->
-    lager:debug("outbound call destroyed"),
+    lager:debug("Outbound call destroyed"),
     gen_listener:cast(self(), 'stop'),
     {'noreply', State};
 
@@ -268,7 +284,7 @@ handle_cast('stop', #state{mycall=Call, outboundid=ObId}=State) ->
     end;
 
 handle_cast(_Cast, State) ->
-    lager:debug("unhandled cast: ~p", [_Cast]),
+    lager:info("unhandled cast: ~p", [_Cast]),
     {'noreply', State}.
 
 handle_call('status', _From, State) ->
@@ -296,12 +312,13 @@ handle_event(JObj, State) ->
     {'reply', []}.
 
 terminate(_Reason, _ObConf) ->
-    lager:debug("outbound call terminated: ~p", [_Reason]).
+    lager:info("Outbound call terminated: ~p", [_Reason]).
 
 code_change(_OldVsn, ObConf, _Extra) ->
     {'ok', ObConf}.
 
 init([Id, Endpoint, Call, From]) ->
+    put('callid', Id),
     process_flag('trap_exit', 'true'),
     N = wh_util:to_binary(node()),
     [_, Host] = binary:split(N, <<"@">>),

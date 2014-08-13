@@ -149,11 +149,11 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 
 handle_info({'EXIT', Pid, {'shutdown', {ObId, Reason}}}, State) ->
-    lager:debug("outbound_call pid ~p obid ~p exited: ~p", [Pid, ObId, Reason]),
+    lager:info("outbound_call pid ~p obid ~p exited: ~p", [Pid, ObId, Reason]),
     #state{calls=Calls} = State,
     {'noreply', State#state{calls=dict:erase(ObId, Calls)}};
 handle_info({'EXIT', Pid, Reason}, State) ->
-    lager:debug("outbound_call pid ~p exited: ~p", [Pid, Reason]),
+    lager:info("outbound_call pid ~p exited: ~p", [Pid, Reason]),
     #state{calls=Calls} = State,
     Calls1 = dict:filter(fun(_, V) -> V =/= Pid end, Calls),
     {'noreply', State#state{calls=Calls1}};
@@ -194,7 +194,7 @@ handle_event(JObj, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
-    lager:debug("outbound_call_manager terminating: ~p", [_Reason]).
+    lager:info("outbound_call_manager terminating: ~p", [_Reason]).
 
 %%--------------------------------------------------------------------
 %% @private
