@@ -9,8 +9,8 @@
 -export([start_link/4
         ,start/1, start/2
         ,stop/1, status/1
-        ,set_listener/2, test/3
-        ,wait_answer/0, wait_answer/1
+        ,test/3
+        ,wait_answer/1, wait_answer/2
         ]).
 %%gen_server callbacks
 -export([init/1
@@ -67,18 +67,16 @@ wait_originate(Timeout) ->
 %% TODO: maybe it's better to create a generic waiting mechanism in whapps_call_command?
 %% basic idea is to create a process to monitor amqp message for a specified call, 
 %% block caller and return when specified event occurs.
-wait_answer() ->
-    wait_answer(?DEFAULT_ANSWER_TIMEOUT).
-wait_answer(Timeout) ->
-    Start = os:timestamp(),
-    receive
-        {'outbound_call_answered', Ret} -> {'ok', Ret};
-        {'outbound_call_rejected', Ret} -> {'error', Ret};
-        _E -> 
-            lager:debug("jerry -- received other event ~p", [_E]),
-            wait_answer(wh_util:decr_timeout(Timeout, Start))
-    after
-        Timeout -> {'error', 'timeout'}
+wait_answer(Pid) ->
+    wait_answer(Pid, ?DEFAULT_ANSWER_TIMEOUT).
+wait_answer(Pid, After) ->
+    Start = erlang:now(),
+    case (catch status(Pid)) of
+        'answered' -> 'ok';
+        {'EXIT', _} -> {'error', 'stopped'};
+        _ ->
+            timer:sleep(1000),
+            wait_answer(Pid, whapps_util:decr_timeout(After, Start))
     end.
 
 test(AccountId, UserId, Number) ->
@@ -107,7 +105,8 @@ test(AccountId, UserId, Number) ->
 start(Call) ->
     {'ok', Pid} = outbound_call_manager:start('undefined', Call),
     case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
-        {'ok', Ret} -> {'ok', Pid, Ret};
+        {'ok', Ret} -> 
+            {'ok', Pid, Ret};
         _Return ->
             lager:debug("outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
             stop(Pid),
@@ -117,8 +116,12 @@ start(Call) ->
 start(Endpoint, Call) ->
     {'ok', Pid} = outbound_call_manager:start(Endpoint, Call),
     case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
-        {'ok', ObCall} -> {'ok', Pid, ObCall};
-        _Return -> _Return
+        {'ok', ObCall} -> 
+            {'ok', Pid, ObCall};
+        _Return -> 
+            lager:debug("outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
+            stop(Pid),
+            _Return
     end.
 
 stop(Pid) when is_pid(Pid) ->
@@ -126,9 +129,6 @@ stop(Pid) when is_pid(Pid) ->
 
 status(Pid) when is_pid(Pid) ->
     gen_listener:call(Pid, 'status').
-
-set_listener(Pid, ListenerPid) when is_pid(Pid) ->
-    gen_listener:call(Pid, {'set_listener', ListenerPid}).
 
 %% Callbacks
 handle_info(_Msg, State) ->
@@ -187,6 +187,7 @@ handle_cast('originate_outbound_call', State) ->
     {'noreply', State#state{status='initial'}};
 
 handle_cast({'update_callid', CallId}, State) ->
+    #state{mycall=MyCall} = State,
     case whapps_call_command:b_channel_status(CallId) of
         {'ok', JObj} -> 
             lager:debug("Got channel status response ~p", [JObj]),
@@ -196,14 +197,13 @@ handle_cast({'update_callid', CallId}, State) ->
             Call = whapps_call:exec([
                         fun(C) -> whapps_call:set_call_id(CallId, C) end
                         ,fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end]
-                        ,State#state.mycall),
+                        ,MyCall),
             Props = [{'callid', CallId},{'restrict_to', [<<"CHANNEL_DESTROY">>]}], 
             gen_listener:add_binding(self(), 'call', Props),
             case Answered of 
                 'true' ->
                     %originate succeed and channel has answered.
                     State#state.from ! {'outbound_call_originated', Call},
-                    State#state.from ! {'outbound_call_answered', Call},
                     {'noreply', State#state{mycall=Call, status='answered'}};
                 _ -> 
                     %originate succeed and channel has not answered.
@@ -238,16 +238,11 @@ handle_cast({'channel_bridged', JObj}, State) ->
 
 handle_cast({'channel_answered', _JObj}, State) ->
     lager:debug("outbound call answered"),
-    State#state.from ! {'outbound_call_answered', State#state.mycall},
     {'noreply', State#state{status='answered'}};
 
 %callid has updated, but channel is destroyed after.
 handle_cast({'channel_destroy', _JObj}, State) ->
     lager:debug("outbound call destroyed"),
-    case State#state.status of
-        'proceeding' -> State#state.from ! {'outbound_call_rejected', 'channel_destroyed'};
-        _Else -> 'ok'
-    end,
     gen_listener:cast(self(), 'stop'),
     {'noreply', State};
 
@@ -275,9 +270,6 @@ handle_cast('stop', #state{mycall=Call, outboundid=ObId}=State) ->
 handle_cast(_Cast, State) ->
     lager:debug("unhandled cast: ~p", [_Cast]),
     {'noreply', State}.
-
-handle_call({'set_listener', Pid}, _From, State) ->
-    {'reply', 'ok', State#state{from=Pid}};
 
 handle_call('status', _From, State) ->
     #state{status=Status} = State,
