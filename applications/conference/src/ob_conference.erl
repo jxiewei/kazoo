@@ -9,7 +9,7 @@
 -export([start_link/3
         ,kickoff/3, status/1
         ,kick/2, stop/1
-        ,stop/2, join/2]).
+        ,join/2]).
 
 %%gen_server callbacks
 -export([init/1
@@ -81,9 +81,7 @@ kick(ConferenceId, Number) ->
     end.
 
 stop(ConferenceId) ->
-    ob_conference_manager:stop_conference(ConferenceId, 'normal').
-stop(ConferenceId, Reason) ->
-    ob_conference_manager:stop_conference(ConferenceId, Reason).
+    ob_conference_manager:stop_conference(ConferenceId).
 
 join(ConferenceId, Number) ->
     case ob_conference_manager:get_server(ConferenceId) of
@@ -104,7 +102,7 @@ status(ConferenceId) ->
     end.
 
 handle_info('check_exit_condition', State) ->
-    #state{conferenceid=ConferenceId, parties=Parties} = State,
+    #state{parties=Parties} = State,
     case lists:any(fun({_, #party{pid=Pid}}) ->
                         case Pid of
                             'undefined' -> 'false';
@@ -116,8 +114,31 @@ handle_info('check_exit_condition', State) ->
             {'noreply', State};
         'false' ->
             lager:info("No participant running, exiting conference task"),
-            stop(ConferenceId, 'no_party'),
+            gen_listener:cast(self(), {'stop', 'no_party'}),
             {'noreply', State}
+    end;
+
+handle_info({'EXIT', Pid, _Reason}, State) ->
+    lager:debug("Participant pid ~p exited", [Pid]),
+    #state{logid=LogId, userid=UserId, parties=Parties} = State,
+    case dict:to_list(dict:filter(fun(_, V) -> V#party.pid =:= Pid end, Parties)) of
+        [{Number, #party{partylog='undefined'}}|_] ->
+            lager:debug("Participant ~p partylog is empty, saving partylog", [Pid]),
+            PartyLog = #partylog{
+                tasklogid=LogId
+                ,call_id='unknown'
+                ,caller_id_number='unknown'
+                ,callee_id_number=Number
+                ,start_tstamp=wh_util:current_tstamp()
+                ,end_tstamp=wh_util:current_tstamp()
+                ,answer_tstamp=wh_util:current_tstamp()
+                ,hangup_tstamp=wh_util:current_tstamp()
+                ,final_state='exception'
+                ,hangup_cause='unknown'
+                ,owner_id=UserId}, 
+            Parties1 = dict:store(Number, #party{pid='undefined', partylog=PartyLog}, Parties),
+            {'noreply', State#state{parties=Parties1}};
+        _ -> {'noreply', State}
     end;
 
 handle_info(_Msg, State) ->
@@ -176,8 +197,7 @@ handle_cast({'start_participant', _Type, [_Number|Others]},
 handle_cast({'party_exited', PartyLog}, State) ->
     Number = PartyLog#partylog.callee_id_number,
     #state{parties=Parties, logid=LogId
-        ,userid=UserId, conference=Conference
-        ,conferenceid=ConferenceId} = State,
+        ,userid=UserId, conference=Conference} = State,
 
     {'ok', Party} = dict:find(Number, Parties),
     case {Party#party.type, wh_json:is_false(<<"wait_for_moderator">>, Conference)} of
@@ -193,23 +213,25 @@ handle_cast({'party_exited', PartyLog}, State) ->
 
     {'noreply', State#state{parties=Parties1}};
 
+handle_cast('stop', State) -> 
+    handle_cast({'stop', 'normal'}, State);
+
 handle_cast({'stop', Reason='no_party'}, State) ->
     lager:debug("Stopping conference, reason is ~p", [Reason]),
     {'stop', {'shutdown', Reason}, State};
 
 handle_cast({'stop', Reason}, State) ->
-    lager:debug("Stopping conference, reason is ~p", [Reason]),
+    lager:debug("Trying to stop conference, reason is ~p", [Reason]),
     #state{parties=Parties} = State,
     lists:foreach(
             fun({_, #party{pid=Pid}}) -> 
                 case Pid of
                     'undefined' -> 'ok';
-                    _ -> ob_conf_participant:stop(Pid, Reason) 
+                    _ -> ob_conf_participant:stop(Pid) 
                 end
             end, dict:to_list(Parties)),
-    %% DO NOT stop now, have to wait for partylog from participants.
+    %% DO NOT stop now, leave time for collecting partylog.
     {'noreply', State};
-
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
     {'noreply', State};

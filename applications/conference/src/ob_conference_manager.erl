@@ -7,8 +7,8 @@
 
 %%API
 -export([start_link/0
-        ,start_conference/3, stop_conference/1
-        ,stop_conference/2
+        ,start_conference/3
+        ,stop_conference/1
         ,get_server/1]).
 
 %%gen_server callbacks
@@ -43,15 +43,23 @@ start_conference(AccountId, UserId, ConferenceId) ->
     gen_listener:call(Pid, {'start_conference', AccountId, UserId, ConferenceId}).
 
 stop_conference(ConferenceId) ->
-    stop_conference(ConferenceId, 'normal').
-
-stop_conference(ConferenceId, Reason) ->
     [Pid] = gproc:lookup_pids({'p', 'l', 'ob_conference_manager'}),
-    gen_listener:call(Pid, {'stop_conference', ConferenceId, Reason}).
+    gen_listener:call(Pid, {'stop_conference', ConferenceId}).
 
 get_server(ConferenceId) ->
     [Pid] = gproc:lookup_pids({'p', 'l', 'ob_conference_manager'}),
     gen_listener:call(Pid, {'get_server', ConferenceId}).
+
+handle_info({'EXIT', Pid, {'shutdown', {ConferenceId, Reason}}}, State) ->
+    lager:debug("Conference pid ~p id ~p exited: ~p", [Pid, ConferenceId, Reason]),
+    #state{conferences=Conferences} = State,
+    {'noreply', State#state{conferences=dict:erase(ConferenceId, Conferences)}};
+    
+handle_info({'EXIT', Pid, Reason}, State) ->
+    lager:debug("Conference pid ~p exited: ~p", [Pid, Reason]),
+    #state{conferences=Conferences} = State,
+    Conferences1 = dict:filter(fun(_, V) -> V =/= Pid end, Conferences),
+    {'noreply', State#state{conferences=Conferences1}};
 
 handle_info(_Msg, State) ->
     lager:debug("unhandled message: ~p", [_Msg]),
@@ -72,25 +80,19 @@ handle_call({'start_conference', AccountId, UserId, ConferenceId}, _From, State)
             lager:debug("Conference ~p already started", [ConferenceId]),
             {'reply', {'error', 'already_started'}, State};
         _ ->
-            {'ok', Pid} = ob_conference_sup:start_conference(AccountId, UserId, ConferenceId),
+            {'ok', Pid} = ob_conference:start_link(AccountId, UserId, ConferenceId),
             {'reply', 'ok', State#state{conferences=dict:store(ConferenceId, Pid, Conferences)}}
     end;
 
-handle_call({'stop_conference', ConferenceId, Reason}, _From, State) ->
+handle_call({'stop_conference', ConferenceId}, _From, State) ->
     #state{conferences=Conferences} = State,
     case dict:find(ConferenceId, Conferences) of
         {'ok', Pid} ->
-            gen_listener:cast(Pid, {'stop', Reason}),
-            case Reason of
-                'no_party' -> 
-                    {'reply', 'ok', State#state{conferences=dict:erase(ConferenceId, Conferences)}};
-                _ ->
-                    {'reply', 'ok', State}
-            end;
+            gen_listener:cast(Pid, 'stop');
         _Else ->
-            lager:debug("Conference ~p already stopped", [ConferenceId]),
-            {'reply', 'ok', State}
-    end;
+            lager:debug("Conference ~p already stopped", [ConferenceId])
+    end,
+    {'reply', 'ok', State};
 
 handle_call({'get_server', ConferenceId}, _From, State) ->
     #state{conferences=Conferences} = State,

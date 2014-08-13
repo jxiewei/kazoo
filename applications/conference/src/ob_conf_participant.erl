@@ -9,7 +9,7 @@
 
 %%API
 -export([start/2
-        ,stop/1, stop/2
+        ,stop/1
         ,status/1]).
 
 %%gen_server callbacks
@@ -52,10 +52,7 @@ start(Conference, Call) ->
                                      ], [self(), Conference, Call]).
 
 stop(Pid) ->
-    gen_listener:cast(Pid, {'stop', 'normal'}).
-
-stop(Pid, Reason) ->
-    gen_listener:cast(Pid, {'stop', Reason}).
+    gen_listener:cast(Pid, 'stop').
 
 status(Pid) ->
     gen_listener:call(Pid, 'status').
@@ -84,14 +81,16 @@ handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
 handle_cast('channel_answered', State) ->
     lager:debug("Channel answered"),
     #state{obcall=ObCall} = State,
-    whapps_call_command:prompt(<<"conf-welcome">>, ObCall),
-    {'ok', Srv} = conf_participant_sup:start_participant(ObCall),
-    conf_participant:set_discovery_event(State#state.de, Srv),
+    %whapps_call_command:prompt(<<"conf-welcome">>, ObCall),
+    %{'ok', Srv} = conf_participant_sup:start_participant(ObCall),
+    %conf_participant:set_discovery_event(State#state.de, Srv),
     Conference = conf_discovery_req:create_conference(State#state.conference, 
             whapps_call:to_user(ObCall)),
-    lager:debug("Searching for conference"),
+    %lager:debug("Searching for conference"),
     %conf_participant:consume_call_events(Srv),
-    conf_discovery_req:search_for_conference(Conference, ObCall, Srv),
+    %conf_discovery_req:search_for_conference(Conference, ObCall, Srv),
+
+    conf_participant:send_conference_command(Conference, ObCall),
 
     %%FIXME: store Call to calls
     {'noreply', State#state{status='online'
@@ -116,7 +115,7 @@ handle_cast('outbound_call_originated', State) ->
 
 handle_cast({'outbound_call_hangup', HangupCause}, State) ->
     lager:debug("Outbound call hang up, reason ~p", [HangupCause]),
-    {'stop', 'hangup', State#state{hangupcause=HangupCause
+    {'stop', {'shutdown', 'hangup'}, State#state{hangupcause=HangupCause
                                   ,hangup_tstamp=wh_util:current_tstamp()}};
 
 handle_cast('init', State) ->
@@ -130,16 +129,16 @@ handle_cast('init', State) ->
                                     ,obid=ObId, status='proceeding'}};
         {'error', _Reason} ->
             lager:error("Call conference participant failed, reason ~p", [_Reason]),
-           {'stop', 'originate_failed', State#state{status='failed'}};
+           {'stop', {'shutdown', 'originate_failed'}, State#state{status='failed'}};
         _Else ->
             lager:error("Outbound call returned unexpected ~p", [_Else]),
-           {'stop', 'originate_failed', State#state{status='failed'}}
+           {'stop', {'shutdown', 'originate_failed'}, State#state{status='failed'}}
     end;
 
-handle_cast({'stop', Reason}, State) ->
-    lager:debug("Stopping conference participant, reason ~p", [Reason]),
+handle_cast('stop', State) ->
+    lager:debug("Stopping conference participant"),
     outbound_call:stop(State#state.obid),
-    {'stop', Reason, State};
+    {'stop', 'shutdown', State};
 
 handle_cast(_Cast, State) ->
     lager:debug("unhandled cast: ~p", [_Cast]),
@@ -171,7 +170,7 @@ reason_to_final_state('originate_failed') -> 'failed';
 reason_to_final_state('moderator_exited') -> 'succeeded';
 reason_to_final_state(_) -> 'exception'.
 
-terminate(Reason, State) ->
+terminate({'shutdown', Reason}, State) ->
     #state{status=Status} = State,
     Call = case State#state.obcall of
         'undefined' -> State#state.call;
@@ -195,7 +194,9 @@ terminate(Reason, State) ->
         ,owner_id='undefined'
     },
     gen_listener:cast(State#state.server, {'party_exited', PartyLog}),
-    lager:info("Conference participatn terminated: ~p", [Reason]).
+    lager:info("Conference participatn terminated: ~p", [Reason]);
+terminate(_, State) ->
+    terminate({'shutdown', 'unknown'}, State).
 
 code_change(_OldVsn, State, _Extra) ->
     {'ok', State}.

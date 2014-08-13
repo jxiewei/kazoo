@@ -23,6 +23,7 @@
 -export([conference/1, set_conference/2]).
 -export([discovery_event/1, set_discovery_event/2]).
 -export([call/1]).
+-export([send_conference_command/2]).
 
 -export([join_local/1, join_remote/2]).
 

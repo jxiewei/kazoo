@@ -23,7 +23,6 @@
                    ,?WORKER('conference_shared_listener')
                    ,?WORKER('conference_listener')
                    ,?WORKER('ob_conference_manager')
-                   ,?SUPER('ob_conference_sup')
                   ]).
 
 %% ===================================================================
