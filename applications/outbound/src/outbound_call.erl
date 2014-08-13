@@ -105,38 +105,30 @@ test(AccountId, UserId, Number) ->
     start(Call).
             
 start(Call) ->
-    {'ok', Id} = outbound_call_manager:start('undefined', Call),
+    {'ok', Pid} = outbound_call_manager:start('undefined', Call),
     case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
-        {'ok', Ret} -> {'ok', Id, Ret};
+        {'ok', Ret} -> {'ok', Pid, Ret};
         _Return ->
             lager:debug("outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
-            stop(Id),
+            stop(Pid),
             _Return
     end.
 
 start(Endpoint, Call) ->
-    {'ok', Id} = outbound_call_manager:start(Endpoint, Call),
+    {'ok', Pid} = outbound_call_manager:start(Endpoint, Call),
     case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
-        {'ok', ObCall} -> {'ok', Id, ObCall};
+        {'ok', ObCall} -> {'ok', Pid, ObCall};
         _Return -> _Return
     end.
 
-stop(Id) ->
-    outbound_call_manager:stop(Id).
+stop(Pid) when is_pid(Pid) ->
+    gen_listener:cast(Pid, 'stop').
 
-status(Id) ->
-    case outbound_call_manager:get_server(Id) of
-        {'ok', Pid} ->
-            gen_listener:call(Pid, 'status');
-        _Return -> _Return
-    end.
+status(Pid) when is_pid(Pid) ->
+    gen_listener:call(Pid, 'status').
 
-set_listener(Id, ListenerPid) ->
-    case outbound_call_manager:get_server(Id) of
-        {'ok', Pid} ->
-            gen_listener:call(Pid, {'set_listener', ListenerPid});
-        _Return -> _Return
-    end.
+set_listener(Pid, ListenerPid) when is_pid(Pid) ->
+    gen_listener:call(Pid, {'set_listener', ListenerPid}).
 
 %% Callbacks
 handle_info(_Msg, State) ->
@@ -195,7 +187,6 @@ handle_cast('originate_outbound_call', State) ->
     {'noreply', State#state{status='initial'}};
 
 handle_cast({'update_callid', CallId}, State) ->
-    #state{outboundid=OutboundId} = State,
     case whapps_call_command:b_channel_status(CallId) of
         {'ok', JObj} -> 
             lager:debug("Got channel status response ~p", [JObj]),
@@ -223,7 +214,7 @@ handle_cast({'update_callid', CallId}, State) ->
             end;
         {'error', Reason} ->
             lager:info("Failed to get channel status of ~p, reason is ~p", [CallId, Reason]),
-            stop(OutboundId),
+            gen_listener:cast(self(), 'stop'),
             {'noreply', State} 
     end;
 
@@ -234,10 +225,9 @@ handle_cast({'originate_success', _JObj}, State) ->
     
 %originate command failed
 handle_cast({'originate_fail', _JObj}, State) ->
-    #state{outboundid=OutboundId} = State,
     lager:debug("outbound call originate failed"),
     State#state.from ! {'outbound_call_originate_failed', 'originate_fail'},
-    stop(OutboundId),
+    gen_listener:cast(self(), 'stop'),
     {'noreply', State};
 
 handle_cast({'channel_bridged', JObj}, State) ->
@@ -253,13 +243,12 @@ handle_cast({'channel_answered', _JObj}, State) ->
 
 %callid has updated, but channel is destroyed after.
 handle_cast({'channel_destroy', _JObj}, State) ->
-    #state{outboundid=OutboundId} = State,
     lager:debug("outbound call destroyed"),
     case State#state.status of
         'proceeding' -> State#state.from ! {'outbound_call_rejected', 'channel_destroyed'};
         _Else -> 'ok'
     end,
-    stop(OutboundId),
+    gen_listener:cast(self(), 'stop'),
     {'noreply', State};
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
@@ -273,14 +262,14 @@ handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
 %% TODO: Do not exit immediately to hangup calls ringed already but not answered yet.
 %% to avoid ghost call. Issue here is for voip calls, we haven't got callid yet.
 %% Voip calls CHANNEL_BRIDGE occurs only after callee answered.
-handle_cast('stop', #state{mycall=Call}=State) ->
+handle_cast('stop', #state{mycall=Call, outboundid=ObId}=State) ->
     lager:debug("Trying to stop outbound call"),
     case whapps_call:control_queue(Call) of
         'undefined' -> 
-            {'stop', 'normal', State};
+            {'stop', {'shutdown', {ObId, 'stopped'}}, State};
         _ ->
             whapps_call_command:hangup(Call),
-            {'stop', 'normal', State}
+            {'stop', {'shutdown', {ObId, 'stopped'}}, State}
     end;
 
 handle_cast(_Cast, State) ->

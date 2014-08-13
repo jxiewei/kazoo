@@ -10,8 +10,7 @@
 -behaviour(gen_listener).
 
 -export([start_link/0
-        ,start/2, stop/1
-        ,get_server/1]).
+        ,start/2, stop/1]).
 -export([init/1
          ,handle_call/3
          ,handle_cast/2
@@ -59,10 +58,6 @@ stop(Id) ->
     [Pid] = gproc:lookup_pids({'p', 'l', 'outbound_call_manager'}),
     gen_listener:call(Pid, {'stop', Id}).
 
-get_server(Id) ->
-    [Pid] = gproc:lookup_pids({'p', 'l', 'outbound_call_manager'}),
-    gen_listener:call(Pid, {'get_server', Id}).
-    
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -103,26 +98,21 @@ init([]) ->
 handle_call({'start', Endpoint, Call}, {FromPid, _}, State) ->
     #state{calls=Calls} = State,
     Id = wh_util:rand_hex_binary(16),
-    {'ok', Pid} = outbound_call_sup:start(Id, Endpoint, Call, FromPid),
-    {'reply', {'ok', Id}, State#state{calls=dict:store(Id, Pid, Calls)}};
+    {'ok', Pid} = outbound_call:start_link(Id, Endpoint, Call, FromPid),
+    {'reply', {'ok', Pid}, State#state{calls=dict:store(Id, Pid, Calls)}};
+
+handle_call({'stop', Pid}, _, State) when is_pid(Pid) ->
+    gen_listener:cast(Pid, 'stop'),
+    {'reply', 'ok', State};
 
 handle_call({'stop', Id}, _, State) ->
     #state{calls=Calls} = State,
     case dict:find(Id, Calls) of
         {'ok', Pid} -> 
             gen_listener:cast(Pid, 'stop'),
-            {'reply', 'ok', State#state{calls=dict:erase(Id, Calls)}};
+            {'reply', 'ok', State};
         _ ->
             {'reply', {'error', 'not_found'}, State}
-    end;
-
-handle_call({'get_server', Id}, _From, State) ->
-    #state{calls=Calls} = State,
-    case dict:find(Id, Calls) of
-        {'ok', Pid} ->
-            {'reply', {'ok', Pid}, State};
-        _ ->
-            {'reply', {'error', 'not_found'}, State} 
     end;
 
 handle_call(_Request, _From, State) ->
@@ -157,6 +147,16 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+
+handle_info({'EXIT', Pid, {'shutdown', {ObId, Reason}}}, State) ->
+    lager:debug("outbound_call pid ~p obid ~p exited: ~p", [Pid, ObId, Reason]),
+    #state{calls=Calls} = State,
+    {'noreply', State#state{calls=dict:erase(ObId, Calls)}};
+handle_info({'EXIT', Pid, Reason}, State) ->
+    lager:debug("outbound_call pid ~p exited: ~p", [Pid, Reason]),
+    #state{calls=Calls} = State,
+    Calls1 = dict:filter(fun(_, V) -> V =/= Pid end, Calls),
+    {'noreply', State#state{calls=Calls1}};
 handle_info(_Info, State) ->
     {'noreply', State}.
 
