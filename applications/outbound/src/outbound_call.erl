@@ -144,9 +144,12 @@ wait_control_queue(CallId, After) ->
                 'undefined' -> 
                     timer:sleep(1000),
                     wait_control_queue(CallId, whapps_util:decr_timeout(After, Start));
-                _ -> 
+                _ ->
                     {'ok', CtrlQ, Answered}
             end;
+        {'error', 'not_found'} ->
+            timer:sleep(1000),
+            wait_control_queue(CallId, whapps_util:decr_timeout(After, Start));
         _Else -> _Else
     end.
 
