@@ -116,7 +116,7 @@ handle_call({'new_task', 0, AccountId, UserId, TaskId}, _From, State) ->
             lager:debug("Broadcast task ~p already started", [TaskId]),
             {'reply', {'error', 'already_started'}, State};
         _ -> 
-            {'ok', Pid} = broadcast_task_sup:new_task(AccountId, UserId, TaskId),
+            {'ok', Pid} = broadcast_task:start_link(AccountId, UserId, TaskId),
             {'reply', 'ok', State#state{tasks=dict:store(TaskId, Pid, Tasks)}}
     end;
 
@@ -176,7 +176,7 @@ handle_call({'del_task', TaskId}, _From, State) ->
     case dict:find(TaskId, Tasks) of
         {'ok', Pid} ->
             gen_listener:cast(Pid, 'stop'),
-            {'reply', 'ok', State#state{tasks=dict:erase(TaskId, Tasks)}};
+            {'reply', 'ok', State};
         _Else ->
             {'reply', 'ok', State}
     end;
@@ -222,6 +222,12 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+
+handle_info({'EXIT', Pid, Reason}, State) ->
+    lager:debug("Broadcast participant pid ~p exited: ~p", [Pid, Reason]),
+    #state{tasks=Tasks} = State,
+    Tasks1 = dict:filter(fun(_, V) -> V =/= Pid end, Tasks),
+    {'noreply', State#state{tasks=Tasks1}};
 handle_info(_Info, State) ->
     {'noreply', State}.
 

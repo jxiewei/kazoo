@@ -64,15 +64,14 @@ handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.
 
 handle_info(_Msg, State) ->
-    lager:debug("unhandled message: ~p", [_Msg]),
+    lager:info("Unhandled message: ~p", [_Msg]),
     {'noreply', State}.
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
-    lager:debug("jerry -- is_consuming ~p", [_IsConsuming]),
     {'noreply', State};
 
 handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
-    lager:debug("jerry -- created_queue ~p", [_QueueName]),
+    lager:debug("created_queue ~p", [_QueueName]),
     DE = wh_json:from_list([{<<"Server-ID">>, _QueueName}
                            ,{<<"Conference-Doc">>, State#state.conference}]),
     gen_listener:cast(self(), 'init'),
@@ -97,8 +96,8 @@ handle_cast('channel_answered', State) ->
                             ,answer_tstamp=wh_util:current_tstamp()}};
 
 handle_cast('outbound_call_originated', State) ->
-    lager:debug("Participant outbound call originated"),
     #state{obcall=ObCall, obid=ObId} = State,
+    lager:info("Participant outbound call originated, obid is ~p", [ObId]),
     case outbound_call:status(ObId) of
         {'ok', 'answered'} ->
             lager:debug("Channel already answered"),
@@ -114,7 +113,7 @@ handle_cast('outbound_call_originated', State) ->
     {'noreply', State};
 
 handle_cast({'outbound_call_hangup', HangupCause}, State) ->
-    lager:debug("Outbound call hang up, reason ~p", [HangupCause]),
+    lager:info("Outbound call hang up, reason ~p", [HangupCause]),
     {'stop', {'shutdown', 'hangup'}, State#state{hangupcause=HangupCause
                                   ,hangup_tstamp=wh_util:current_tstamp()}};
 
@@ -141,7 +140,7 @@ handle_cast('stop', State) ->
     {'stop', 'shutdown', State};
 
 handle_cast(_Cast, State) ->
-    lager:debug("unhandled cast: ~p", [_Cast]),
+    lager:info("Unhandled cast: ~p", [_Cast]),
     {'noreply', State}.
 
 handle_event(JObj, State) ->
@@ -153,7 +152,7 @@ handle_event(JObj, State) ->
         {<<"call_event">>, <<"CHANNEL_ANSWER">>} ->
             gen_listener:cast(Pid, 'channel_answered');
         _Else ->
-            lager:debug("jerry -- unhandled event ~p", [JObj])
+            lager:info("Unhandled event ~p", [JObj])
     end,
     {'reply', []}.
 

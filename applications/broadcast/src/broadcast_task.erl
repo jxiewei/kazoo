@@ -28,6 +28,7 @@
 -define(CONSUME_OPTIONS, []).
 -define(DEVICES_VIEW, <<"devices/listing_by_owner">>).
 -define(EXIT_COND_CHECK_INTERVAL, 5).
+-define(ORIGINATE_RATE, 10).
 
 -record(state, {account_id :: binary()
                 ,userid :: binary()
@@ -85,7 +86,7 @@ stop(TaskId) ->
     broadcast_manager:del_task(TaskId).
 
 handle_info('check_exit_condition', State) ->
-    #state{taskid=TaskId, participants=Parties} = State,
+    #state{participants=Parties} = State,
     %case lists:any(fun({_, #participant{pid=Pid}}) -> 
     case lists:any(fun({_, #participant{pid=Pid}}) -> 
                         case Pid of
@@ -98,8 +99,7 @@ handle_info('check_exit_condition', State) ->
             {'noreply', State};
         'false' ->
             lager:info("No participant running, exiting broadcast task"),
-            stop(TaskId),
-            {'noreply', State}
+            {'stop', 'shutdown', State}
     end;
 
 handle_info(_Msg, State) ->
@@ -114,13 +114,13 @@ handle_cast('init', State) ->
     Moderators = wh_json:get_value(<<"presenters">>, Task),
     Members = wh_json:get_value(<<"listeners">>, Task),
     lager:debug("presenters ~p, listeners ~p", [Moderators, Members]),
-    lists:foreach(fun(N) ->
-                    gen_listener:cast(self(), {'start_participant', wh_util:to_binary(N)}) 
-                  end, Moderators ++ Members),
+
+    gen_listener:cast(self(), {'start_participant', 'true', Moderators}),
+    gen_listener:cast(self(), {'start_participant', 'false', Members}),
 
     {'noreply', State};
 
-handle_cast({'start_participant', Number}, #state{account_id=AccountId
+handle_cast({'start_participant', Moderator, [Number|Others]}, #state{account_id=AccountId
                                             ,account=Account
                                             ,userid=UserId
                                             ,user=User
@@ -149,7 +149,13 @@ handle_cast({'start_participant', Number}, #state{account_id=AccountId
                ,fun(C) -> whapps_call:set_owner_id(UserId, C) end]
                ,whapps_call:new()),
 
-    {'ok', Pid} = broadcast_participant:start(Call, wh_json:get_value(<<"media_id">>, Task)),
+    case wh_json:get_value(<<"type">>, Task) of 
+        <<"file">> ->
+            {'ok', Pid} = broadcast_participant:start(Call, {'file', Moderator, wh_json:get_value(<<"media_id">>, Task)});
+        <<"conference">> ->
+            {'ok', Pid} = broadcast_participant:start(Call, {'conference', Moderator, wh_json:get_value(<<"media_id">>, Task)})
+    end,
+    timer:apply_after(wh_util:to_integer(1000/?ORIGINATE_RATE), gen_listener, cast, [self(), {'start_participant', Moderator, Others}]),
     {'noreply', State#state{participants=dict:store(Number, #participant{pid=Pid, partylog=#partylog{}}, Parties)}};
 
 handle_cast({'participant_exited', PartyLog}, State) ->
@@ -171,7 +177,10 @@ handle_cast('stop', State) ->
     lager:debug("Stopping broadcast task ~p", [TaskId]),
     lists:foreach(
             fun({_, #participant{pid=Pid}}) -> 
-                broadcast_participant:stop(Pid) 
+                case Pid of
+                    'undefined' -> 'ok';
+                    _ -> broadcast_participant:stop(Pid) 
+                end
             end, dict:to_list(State#state.participants)),
 
     {'noreply', State};

@@ -25,13 +25,13 @@
 -define(QUEUE_NAME, <<>>).
 -define(QUEUE_OPTIONS, []).
 -define(CONSUME_OPTIONS, []).
+-define(SUCCESSFUL_HANGUP_CAUSES, [<<"NORMAL_CLEARING">>, <<"ORIGINATOR_CANCEL">>, <<"SUCCESS">>]).
 
 -record(state, {call :: whapps_call:call()
-               ,obcall :: whapps_call:call()
-               ,obid :: binary()
-               ,media :: ne_binary()
+               ,type :: ne_binary()
                ,status
                ,self :: pid()
+               ,myq
                ,server :: pid()
                ,start_tstamp
                ,answer_tstamp
@@ -40,19 +40,34 @@
                }).
 
 
-start(Call, Media) ->
+start(Call, Type) ->
     Bindings = [{'self', []}],
     gen_listener:start_link(?MODULE, [{'responders', ?RESPONDERS}
                                       ,{'bindings', Bindings} ,{'queue_name', ?QUEUE_NAME}
                                       ,{'queue_options', ?QUEUE_OPTIONS}
                                       ,{'consume_options', ?CONSUME_OPTIONS}
-                                     ], [self(), Call, Media]).
+                                     ], [self(), Call, Type]).
 
 stop(Pid) ->
     gen_listener:cast(Pid, 'stop').
 
 status(Pid) ->
     gen_listener:call(Pid, 'status').
+
+join_conference(Call, ConferenceId, Moderator) ->
+    case Moderator of
+        'true' -> Mute = 'false';
+        _ -> Mute = 'true'
+    end,
+    Command = [{<<"Application-Name">>, <<"conference">>}
+            ,{<<"Conference-ID">>, ConferenceId}
+            ,{<<"Mute">>, Mute}
+            ,{<<"Deaf">>, 'false'}
+            ,{<<"Moderator">>, Moderator}
+            ,{<<"Profile">>, <<"default">>}
+            ],
+    whapps_call_command:send_command(Command, Call). 
+
 
 handle_call('status', _From, #state{status=Status}=State) ->
     {'reply', {'ok', Status}, State};
@@ -69,31 +84,42 @@ handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
 
 handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
     gen_listener:cast(self(), 'init'),
-    {'noreply', State};
+    {'noreply', State#state{myq=_QueueName}};
 
 handle_cast('channel_answered', State) ->
-    #state{obcall=ObCall, media=Media} = State,
+    #state{call=Call, type=Type} = State,
     lager:debug("Broadcast participant answered"),
-    whapps_call_command:play(<<$/, (whapps_call:account_db(ObCall))/binary, $/, Media/binary>>, ObCall),
+    case Type of 
+        {'file', _Moderator, MediaId} ->
+            whapps_call_command:play(<<$/, (whapps_call:account_db(Call))/binary, $/, MediaId/binary>>, Call);
+        {'conference', Moderator, ConferenceId} ->
+            join_conference(Call, ConferenceId, Moderator)
+    end,
     {'noreply', State#state{status='online'
                            ,answer_tstamp=wh_util:current_tstamp()}};
 
-handle_cast('outbound_call_originated', State) ->
-    lager:debug("Participant outbound call originated"),
-    #state{obcall=ObCall, obid=ObId} = State,
-    case outbound_call:status(ObId) of
-        {'ok', 'answered'} ->
-            gen_listener:cast(self(), 'channel_answered');
-        _ -> 'ok'
-    end,
-    Props = [{'callid', whapps_call:call_id(ObCall)} 
-            ,{'restrict_to',
-              [<<"CHANNEL_EXECUTE_COMPLETE">>
-              ,<<"CHANNEL_DESTROY">>
-              ,<<"CHANNEL_ANSWER">>]
-           }],
-    gen_listener:add_binding(self(), 'call', Props),
-    {'noreply', State};
+handle_cast({'originate_uuid', CallId, CtrlQ}, State) ->
+    #state{call=Call} = State,
+    NewCall = whapps_call:exec([fun(C) -> whapps_call:set_call_id(CallId, C) end,
+                    fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end], Call),
+    {'noreply', State#state{call=NewCall}};
+
+handle_cast({'outbound_call_originated', NewCallId}, State) ->
+    case NewCallId of
+        'undefined' -> 
+            {'noreply', State#state{status='failed'}};
+        _ ->
+            lager:debug("Participant outbound call originated"),
+            #state{call=Call} = State,
+            Props = [{'callid', NewCallId}
+                ,{'restrict_to',
+                [<<"CHANNEL_EXECUTE_COMPLETE">>
+                ,<<"CHANNEL_DESTROY">>
+                ,<<"CHANNEL_ANSWER">>]
+                }],
+            gen_listener:add_binding(self(), 'call', Props),
+            {'noreply', State#state{status='proceeding', call=whapps_call:set_call_id(NewCallId, Call)}}
+    end;
 
 handle_cast({'outbound_call_hangup', HangupCause}, State) ->
     lager:debug("Broadcast participant call hanged up"),
@@ -110,7 +136,8 @@ handle_cast({'outbound_call_hangup', HangupCause}, State) ->
 
 handle_cast({'play_completed', Result}, State) ->
     lager:debug("Finished playing to broadcast participant, result is ~p", [Result]),
-    outbound_call:stop(State#state.obid),
+    #state{call=Call} = State,
+    whapps_call_command:hangup(Call),
     case Result of
         <<"FILE PLAYED">> -> 
             {'noreply', State#state{status='succeeded'}};
@@ -120,23 +147,53 @@ handle_cast({'play_completed', Result}, State) ->
     end;
 
 handle_cast('init', State) ->
-    #state{call=Call} = State,
+    #state{call=Call, myq=Q} = State,
     lager:debug("Initializing broadcast participant ~p", [whapps_call:to_user(Call)]),
-    case outbound_call:start(Call) of
-        {'ok', ObId, ObCall} ->
-            put('callid', whapps_call:call_id(ObCall)),
-            gen_listener:cast(self(), 'outbound_call_originated'),
-            {'noreply', State#state{obcall=ObCall, obid=ObId, status='proceeding'}};
-        {'error', _Reason} ->
-            lager:error("Call broadcast participant failed"),
-           {'stop', 'normal', State#state{status='failed'}};
-        _Else ->
-           {'noreply', State}
-    end;
+
+    AccountId = whapps_call:account_id(Call),
+    CCVs = [{<<"Account-ID">>, AccountId}
+            ,{<<"Retain-CID">>, <<"true">>}
+            ,{<<"Inherit-Codec">>, <<"false">>}
+            ,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
+            ,{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
+           ],
+
+    [Number, _] = binary:split(whapps_call:to(Call), <<"@">>),
+    Endpoint = wh_json:from_list([{<<"Invite-Format">>, <<"route">>}
+                            ,{<<"Route">>,  <<Number/binary, "@211.154.153.118">>}
+                            ,{<<"To-DID">>, Number}
+                            ,{<<"To-Realm">>, whapps_call:request_realm(Call)}
+                            ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}]),
+
+    MsgId = wh_util:rand_hex_binary(16),
+    %FIXME: codec renegotiation issues.
+    [RequestUser, _] = binary:split(whapps_call:request(Call), <<"@">>),
+    Request = props:filter_undefined(
+                 [{<<"Application-Name">>, <<"park">>}
+                 ,{<<"Originate-Immediate">>, 'true'}
+                 ,{<<"Msg-ID">>, MsgId}         
+                 ,{<<"Endpoints">>, [Endpoint]}
+                 ,{<<"Outbound-Caller-ID-Name">>, <<"Broadcast Call">>}
+                 ,{<<"Outbound-Caller-ID-Number">>, RequestUser}
+                 ,{<<"Outbound-Callee-ID-Name">>, 'undefined'}
+                 ,{<<"Outbound-Callee-ID-Number">>, 'undefined'}
+                 ,{<<"Request">>, whapps_call:request(Call)}
+                 ,{<<"From">>, whapps_call:from(Call)}
+                 ,{<<"Dial-Endpoint-Method">>, <<"single">>}
+                 ,{<<"Continue-On-Fail">>, 'false'}
+                 ,{<<"Server-ID">>, Q}
+                 ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
+                 ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>
+                                                     ,<<"Authorizing-ID">>, <<"Authorizing-Type">>]}                                         
+                 | wh_api:default_headers(<<"resource">>, <<"originate_req">>, ?APP_NAME, ?APP_VERSION)                                                                          
+                ]),
+    wapi_resource:publish_originate_req(Request),
+    {'noreply', State};
 
 handle_cast('stop', State) ->
     lager:debug("Stopping broadcast participant"),
-    outbound_call:stop(State#state.obid),
+    #state{call=Call} = State,
+    whapps_call_command:hangup(Call),
     {'stop', {'shutdown', 'stopped'}, State};
 
 handle_cast(_Cast, State) ->
@@ -155,6 +212,22 @@ handle_event(JObj, State) ->
     #state{self=Pid} = State,
     lager:debug("received call event, ~p", [JObj]),
     case whapps_util:get_event_type(JObj) of
+        {<<"resource">>, <<"originate_uuid">>} ->
+            gen_listener:cast(Pid, {'originate_uuid'
+                                    ,wh_json:get_value(<<"Outbound-Call-ID">>, JObj)
+                                    ,wh_json:get_value(<<"Outbound-Call-Control-Queue">>, JObj)
+                              });
+        {<<"resource">>, <<"originate_resp">>} ->
+            AppResponse = wh_json:get_first_defined([<<"Application-Response">> ,<<"Hangup-Cause">> ,<<"Error-Message">>], JObj),
+            NewCallId = 
+            case lists:member(AppResponse, ?SUCCESSFUL_HANGUP_CAUSES) of
+                'true' -> wh_json:get_value(<<"Call-ID">>, JObj);
+                'false' when AppResponse =:= 'undefined' -> wh_json:get_value(<<"Call-ID">>, JObj);
+                'false' -> 
+                    lager:debug("app response ~s not successful: ~p", [AppResponse, JObj]),
+                    'undefined'
+            end,
+            gen_listener:cast(Pid, {'outbound_call_originated', NewCallId});
         {<<"call_event">>, <<"CHANNEL_EXECUTE_COMPLETE">>} ->
             lager:debug("received CHANNEL_EXECUTE_COMPLETE event, app is ~p", [get_app(JObj)]),
             case get_app(JObj) of
@@ -182,14 +255,10 @@ reason_to_final_state({'shutdown', _}) -> 'interrupted';
 reason_to_final_state(_) -> 'exception'.
 
 terminate(Reason, State) ->
-    #state{obcall=ObCall, status=Status} = State, 
+    #state{call=Call, status=Status} = State, 
     FinalState = case is_final_state(Status) of
         'true' -> Status;
         'false' -> reason_to_final_state(Reason)
-    end,
-    Call = case ObCall of
-        'undefined' -> State#state.call;
-        _Else -> _Else
     end,
     PartyLog = #partylog{
         tasklogid='undefined'
@@ -210,10 +279,10 @@ terminate(Reason, State) ->
 code_change(_OldVsn, State, _Extra) ->
     {'ok', State}.
 
-init([Server, Call, Media]) ->
+init([Server, Call, Type]) ->
     process_flag('trap_exit', 'true'),
     {'ok', #state{call=Call
-                 ,media=Media
+                 ,type=Type
                  ,self=self()
                  ,server=Server
                  ,status='initial'

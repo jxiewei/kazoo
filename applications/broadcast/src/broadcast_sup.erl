@@ -16,7 +16,6 @@
 
 
 -define(CHILDREN, [?WORKER('broadcast_manager')
-                   ,?SUPER('broadcast_task_sup')
                   ]).
 
 %% ===================================================================

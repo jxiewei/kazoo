@@ -52,7 +52,7 @@
 -define(QUEUE_OPTIONS, []).
 -define(CONSUME_OPTIONS, []).
 
--define(ORIGINATE_PARK, <<"set_zombie_exec &park()">>).
+-define(ORIGINATE_PARK, <<"&park()">>).
 -define(ORIGINATE_EAVESDROP, <<"eavesdrop">>).
 -define(REPLY_TIMEOUT, 5000).
 

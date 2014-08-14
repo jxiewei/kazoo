@@ -119,7 +119,7 @@ handle_info('check_exit_condition', State) ->
     end;
 
 handle_info({'EXIT', Pid, _Reason}, State) ->
-    lager:debug("Participant pid ~p exited", [Pid]),
+    lager:info("Participant pid ~p exited", [Pid]),
     #state{logid=LogId, userid=UserId, parties=Parties} = State,
     case dict:to_list(dict:filter(fun(_, V) -> V#party.pid =:= Pid end, Parties)) of
         [{Number, #party{partylog='undefined'}}|_] ->
@@ -148,7 +148,7 @@ handle_info(_Msg, State) ->
 handle_cast('init', State) ->
     #state{conferenceid=ConferenceId, conference=Conference} = State,
     put('callid', ConferenceId),
-    lager:debug("Initializing conference task ~p", [ConferenceId]),
+    lager:info("Initializing conference task ~p", [ConferenceId]),
 
     Moderators = wh_json:get_value([<<"moderator">>, <<"numbers">>], Conference),
     Members = wh_json:get_value([<<"member">>, <<"numbers">>], Conference),
@@ -202,12 +202,12 @@ handle_cast({'party_exited', PartyLog}, State) ->
     {'ok', Party} = dict:find(Number, Parties),
     case {Party#party.type, wh_json:is_false(<<"wait_for_moderator">>, Conference)} of
         {'moderator',  'true'} ->
-            lager:debug("Moderator ~p exited and wait_for_moderator is false, stop conference now", [Number]),
+            lager:info("Moderator ~p exited and wait_for_moderator is false, stop conference now", [Number]),
             gen_listener:cast(self(), {'stop', 'moderator_exited'});
         _ -> 'ok'
     end,
 
-    lager:debug("Party ~p exited, saving partylog", [Number]),
+    lager:info("Party ~p exited, saving partylog", [Number]),
     PartyLog1 = PartyLog#partylog{tasklogid=LogId, owner_id=UserId},
     Parties1 = dict:store(Number, #party{pid='undefined', partylog=PartyLog1}, Parties),
 
@@ -241,7 +241,7 @@ handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
     {'noreply', State};
 
 handle_cast(_Cast, State) ->
-    lager:debug("unhandled cast: ~p", [_Cast]),
+    lager:info("Unhandled cast: ~p", [_Cast]),
     {'noreply', State}.
 
 
@@ -277,7 +277,7 @@ handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.
 
 handle_event(JObj, _State) ->
-    lager:debug("unhandled event ~p", [JObj]),
+    lager:info("Unhandled event ~p", [JObj]),
     {'reply', []}.
 
 inc(Number) -> Number+1.
@@ -367,7 +367,7 @@ save_partylog(AccountId, PartyLog) ->
     {'ok', _} = kazoo_modb:save_doc(AccountId, HistoryItem).
 
 terminate(_Reason, State) ->
-    lager:debug("Terminating conference task"),
+    lager:info("Terminating conference task"),
     #state{account_id=AccountId, logid=LogId, conferenceid=ConferenceId, parties=Parties} = State,
     Stats = get_stats(Parties),
 
@@ -385,7 +385,7 @@ terminate(_Reason, State) ->
         ,exception_party=dict:fetch('exception', Stats)
     },
 
-    lager:debug("Saving tasklog and partylog"),
+    lager:info("Saving tasklog and partylog"),
     save_tasklog(AccountId, TaskLog),
     dict:fold(fun(_, #party{partylog=PartyLog}, Acc) ->
             save_partylog(AccountId, PartyLog),
