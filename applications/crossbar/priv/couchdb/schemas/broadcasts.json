@@ -17,7 +17,7 @@
         "description":"The type of broadcast",
         "required":true,
         "type":"string",
-        "enum":["file", "recording"]
+        "enum":["file", "recording", "conference"]
       },
       "media_id":{
           "name":"Media (ID)",
