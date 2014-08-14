@@ -120,6 +120,7 @@ handle_cast('init', State) ->
 
     {'noreply', State};
 
+handle_cast({'start_participant', _Moderator, []}, State) -> {'noreply', State};
 handle_cast({'start_participant', Moderator, [Number|Others]}, #state{account_id=AccountId
                                             ,account=Account
                                             ,userid=UserId
@@ -153,7 +154,7 @@ handle_cast({'start_participant', Moderator, [Number|Others]}, #state{account_id
         <<"file">> ->
             {'ok', Pid} = broadcast_participant:start(Call, {'file', Moderator, wh_json:get_value(<<"media_id">>, Task)});
         <<"conference">> ->
-            {'ok', Pid} = broadcast_participant:start(Call, {'conference', Moderator, wh_json:get_value(<<"media_id">>, Task)})
+            {'ok', Pid} = broadcast_participant:start(Call, {'conference', Moderator, TaskId})
     end,
     timer:apply_after(wh_util:to_integer(1000/?ORIGINATE_RATE), gen_listener, cast, [self(), {'start_participant', Moderator, Others}]),
     {'noreply', State#state{participants=dict:store(Number, #participant{pid=Pid, partylog=#partylog{}}, Parties)}};
