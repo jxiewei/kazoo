@@ -132,14 +132,13 @@ validate(#cb_context{req_verb = ?HTTP_POST}=Context, Id, ?KICKOFF_PATH_TOKEN) ->
     end;
 
 validate(#cb_context{req_verb = ?HTTP_POST}=Context, Id, ?END_PATH_TOKEN) ->
-    Context1 = load_broadcast(Id, Context),
     case broadcast_task:stop(Id) of
         'ok' -> 
             lager:debug("broadcast task(~p) stopped successfully", [Id]),
-            Context1;
+            Context;
         _Reason ->
             lager:debug("broadcast task(~p) stopped failed, reason ~p", [Id, _Reason]),
-            crossbar_util:response('error', <<"stop failed">>, 500, Context1)
+            crossbar_util:response('error', <<"stop failed">>, 500, Context)
     end.
 
 -spec post(#cb_context{}, path_token()) -> #cb_context{}.
@@ -167,6 +166,7 @@ put(Context) ->
             couch_mgr:del_doc(cb_context:account_db(Context1), cb_context:doc(Context1)),
             crossbar_util:response('error', <<"Broadcast task failed to start, reason: ", Reason/binary>>, 500, Context1)
     end.
+
 
 -spec delete(#cb_context{}, path_token()) -> #cb_context{}.
 delete(Context, _) ->

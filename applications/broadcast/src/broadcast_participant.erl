@@ -114,7 +114,7 @@ handle_cast({'originate_uuid', CallId, CtrlQ}, State) ->
     gen_listener:add_binding(self(), 'call', Props),
     {'noreply', State#state{call=NewCall, status='originating'}};
 
-handle_cast({'outbound_call_originated', NewCallId}, State) ->
+handle_cast({'outbound_call_originated', _CallId}, State) ->
     lager:debug("Participant outbound call originated"),
     #state{status=Status} = State,
     case Status of
@@ -225,7 +225,7 @@ handle_event(JObj, State) ->
             case lists:member(AppResponse, ?SUCCESSFUL_HANGUP_CAUSES) of
                 'true' -> wh_json:get_value(<<"Call-ID">>, JObj);
                 'false' when AppResponse =:= 'undefined' -> wh_json:get_value(<<"Call-ID">>, JObj);
-                'false' ->
+                'false' -> 
                     lager:error("Originate failed", [JObj]),
                     'undefined'
             end,
