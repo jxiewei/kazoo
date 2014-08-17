@@ -102,23 +102,24 @@ handle_cast({'originate_uuid', CallId, CtrlQ}, State) ->
     #state{call=Call} = State,
     NewCall = whapps_call:exec([fun(C) -> whapps_call:set_call_id(CallId, C) end,
                     fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end], Call),
-    {'noreply', State#state{call=NewCall}};
 
-handle_cast({'outbound_call_originated', NewCallId}, State) ->
-    case NewCallId of
-        'undefined' -> 
-            {'noreply', State#state{status='failed'}};
-        _ ->
-            lager:debug("Participant outbound call originated"),
-            #state{call=Call} = State,
-            Props = [{'callid', NewCallId}
-                ,{'restrict_to',
-                [<<"CHANNEL_EXECUTE_COMPLETE">>
+    lager:debug("callid is ~p", [CallId]),
+    put('callid', CallId),
+    Props = [{'callid', CallId}
+                ,{'restrict_to'
+                ,[<<"CHANNEL_EXECUTE_COMPLETE">>
                 ,<<"CHANNEL_DESTROY">>
                 ,<<"CHANNEL_ANSWER">>]
                 }],
-            gen_listener:add_binding(self(), 'call', Props),
-            {'noreply', State#state{status='proceeding', call=whapps_call:set_call_id(NewCallId, Call)}}
+    gen_listener:add_binding(self(), 'call', Props),
+    {'noreply', State#state{call=NewCall, status='originating'}};
+
+handle_cast({'outbound_call_originated', NewCallId}, State) ->
+    lager:debug("Participant outbound call originated"),
+    #state{status=Status} = State,
+    case Status of
+        'originating' -> {'noreply', State#state{status='originated'}};
+   	_ -> {'noreply', State}
     end;
 
 handle_cast({'outbound_call_hangup', HangupCause}, State) ->
@@ -148,7 +149,8 @@ handle_cast({'play_completed', Result}, State) ->
 
 handle_cast('init', State) ->
     #state{call=Call, myq=Q} = State,
-    lager:debug("Initializing broadcast participant ~p", [whapps_call:to_user(Call)]),
+    MsgId = wh_util:rand_hex_binary(16),
+    lager:debug("Initializing broadcast participant ~p, msgid ~p", [whapps_call:to_user(Call), MsgId]),
 
     AccountId = whapps_call:account_id(Call),
     CCVs = [{<<"Account-ID">>, AccountId}
@@ -160,12 +162,12 @@ handle_cast('init', State) ->
 
     [Number, _] = binary:split(whapps_call:to(Call), <<"@">>),
     Endpoint = wh_json:from_list([{<<"Invite-Format">>, <<"route">>}
-                            ,{<<"Route">>,  <<Number/binary, "@211.154.153.118">>}
+                            ,{<<"Route">>,  <<Number/binary, "@192.168.250.76">>}
                             ,{<<"To-DID">>, Number}
                             ,{<<"To-Realm">>, whapps_call:request_realm(Call)}
                             ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}]),
 
-    MsgId = wh_util:rand_hex_binary(16),
+    put('callid', MsgId),
     %FIXME: codec renegotiation issues.
     [RequestUser, _] = binary:split(whapps_call:request(Call), <<"@">>),
     Request = props:filter_undefined(
@@ -223,8 +225,8 @@ handle_event(JObj, State) ->
             case lists:member(AppResponse, ?SUCCESSFUL_HANGUP_CAUSES) of
                 'true' -> wh_json:get_value(<<"Call-ID">>, JObj);
                 'false' when AppResponse =:= 'undefined' -> wh_json:get_value(<<"Call-ID">>, JObj);
-                'false' -> 
-                    lager:debug("app response ~s not successful: ~p", [AppResponse, JObj]),
+                'false' ->
+                    lager:error("Originate failed", [JObj]),
                     'undefined'
             end,
             gen_listener:cast(Pid, {'outbound_call_originated', NewCallId});

@@ -28,7 +28,7 @@
 -define(CONSUME_OPTIONS, []).
 -define(DEVICES_VIEW, <<"devices/listing_by_owner">>).
 -define(EXIT_COND_CHECK_INTERVAL, 5).
--define(ORIGINATE_RATE, 10).
+-define(ORIGINATE_RATE, 20).
 
 -record(state, {account_id :: binary()
                 ,userid :: binary()
