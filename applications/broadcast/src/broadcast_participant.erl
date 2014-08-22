@@ -83,10 +83,12 @@ handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
     {'noreply', State};
 
 handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
+    #state{call=Call} = State,
     gen_listener:cast(self(), 'init'),
-    {'noreply', State#state{myq=_QueueName}};
+    {'noreply', State#state{call=whapps_call:kvs_store('consumer_pid', self(), Call)
+                           ,myq=_QueueName}};
 
-handle_cast('channel_answered', State) ->
+handle_cast('answered', State) ->
     #state{call=Call, type=Type} = State,
     lager:debug("Broadcast participant answered"),
     case Type of 
@@ -98,31 +100,32 @@ handle_cast('channel_answered', State) ->
     {'noreply', State#state{status='online'
                            ,answer_tstamp=wh_util:current_tstamp()}};
 
-handle_cast({'originate_uuid', CallId, CtrlQ}, State) ->
-    #state{call=Call} = State,
-    NewCall = whapps_call:exec([fun(C) -> whapps_call:set_call_id(CallId, C) end,
-                    fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end], Call),
-
-    lager:debug("callid is ~p", [CallId]),
-    put('callid', CallId),
-    Props = [{'callid', CallId}
+handle_cast({'originate_ready', JObj}, State) ->
+    #state{call=Call, myq=Q} = State,
+    CtrlQ = wh_json:get_value(<<"Control-Queue">>, JObj),
+    Props = [{'callid', whapps_call:call_id(Call)}
                 ,{'restrict_to'
                 ,[<<"CHANNEL_EXECUTE_COMPLETE">>
                 ,<<"CHANNEL_DESTROY">>
                 ,<<"CHANNEL_ANSWER">>]
                 }],
     gen_listener:add_binding(self(), 'call', Props),
-    {'noreply', State#state{call=NewCall, status='originating'}};
+    send_originate_execute(JObj, Q),
 
-handle_cast({'outbound_call_originated', _CallId}, State) ->
-    lager:debug("Participant outbound call originated"),
-    #state{status=Status} = State,
-    case Status of
-        'originating' -> {'noreply', State#state{status='originated'}};
-   	_ -> {'noreply', State}
-    end;
+    {'noreply', State#state{call=whapps_call:set_control_queue(CtrlQ, Call)
+                           ,status='proceeding'}};
 
-handle_cast({'outbound_call_hangup', HangupCause}, State) ->
+handle_cast('originate_success', State) ->
+    {'noreply', State#state{status='proceeding'}};
+
+
+handle_cast('originate_failed', State) ->
+    {'stop', 'normal', State#state{status='failed'
+                                  ,hangupcause='originate_failed'
+                                  ,hangup_tstamp=wh_util:current_tstamp()}};
+
+
+handle_cast({'hangup', HangupCause}, State) ->
     lager:debug("Broadcast participant call hanged up"),
     Status = 
     case State#state.status of
@@ -144,8 +147,9 @@ handle_cast({'play_completed', Result}, State) ->
             {'noreply', State#state{status='succeeded'}};
         _ -> 
             lager:info("Broadcast playback may be interrupted by peer, result ~p", [Result]),
-            {'noreply', State#state{status='failed'}} 
+            {'noreply', State#state{status='interrupted'}} 
     end;
+
 
 handle_cast('init', State) ->
     #state{call=Call, myq=Q} = State,
@@ -153,43 +157,16 @@ handle_cast('init', State) ->
     lager:debug("Initializing broadcast participant ~p, msgid ~p", [whapps_call:to_user(Call), MsgId]),
 
     AccountId = whapps_call:account_id(Call),
-    CCVs = [{<<"Account-ID">>, AccountId}
-            ,{<<"Retain-CID">>, <<"true">>}
-            ,{<<"Inherit-Codec">>, <<"false">>}
-            ,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
-            ,{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
-           ],
-
     [Number, _] = binary:split(whapps_call:to(Call), <<"@">>),
-    Endpoint = wh_json:from_list([{<<"Invite-Format">>, <<"route">>}
-                            ,{<<"Route">>,  <<Number/binary, "@192.168.250.76">>}
-                            ,{<<"To-DID">>, Number}
-                            ,{<<"To-Realm">>, whapps_call:request_realm(Call)}
-                            ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}]),
 
-    put('callid', MsgId),
-    %FIXME: codec renegotiation issues.
-    [RequestUser, _] = binary:split(whapps_call:request(Call), <<"@">>),
-    Request = props:filter_undefined(
-                 [{<<"Application-Name">>, <<"park">>}
-                 ,{<<"Originate-Immediate">>, 'true'}
-                 ,{<<"Msg-ID">>, MsgId}         
-                 ,{<<"Endpoints">>, [Endpoint]}
-                 ,{<<"Outbound-Caller-ID-Name">>, <<"Broadcast Call">>}
-                 ,{<<"Outbound-Caller-ID-Number">>, RequestUser}
-                 ,{<<"Outbound-Callee-ID-Name">>, 'undefined'}
-                 ,{<<"Outbound-Callee-ID-Number">>, 'undefined'}
-                 ,{<<"Request">>, whapps_call:request(Call)}
-                 ,{<<"From">>, whapps_call:from(Call)}
-                 ,{<<"Dial-Endpoint-Method">>, <<"single">>}
-                 ,{<<"Continue-On-Fail">>, 'false'}
-                 ,{<<"Server-ID">>, Q}
-                 ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
-                 ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>
-                                                     ,<<"Authorizing-ID">>, <<"Authorizing-Type">>]}                                         
-                 | wh_api:default_headers(<<"resource">>, <<"originate_req">>, ?APP_NAME, ?APP_VERSION)                                                                          
-                ]),
-    wapi_resource:publish_originate_req(Request),
+    case cf_util:lookup_callflow(Number, AccountId) of
+        {'ok', Flow, _NoMatch} ->
+            Request = build_offnet_request(wh_json:get_value([<<"flow">>, <<"data">>], Flow), Call, Q),
+            wapi_offnet_resource:publish_req(Request);
+        {'error', Reason} ->
+            lager:info("Lookup callflow for ~s in account ~s failed: ~p", [Number, AccountId, Reason]),
+            gen_listener:cast(self(), 'originate_failed')
+    end,
     {'noreply', State};
 
 handle_cast('stop', State) ->
@@ -210,26 +187,39 @@ get_app(JObj) ->
 get_app_response(JObj) ->
     wh_json:get_value(<<"Application-Response">>, JObj).
 
+-spec send_originate_execute(wh_json:object(), ne_binary()) -> 'ok'.
+send_originate_execute(JObj, Q) ->
+    CallId = wh_json:get_value([<<"Resource-Response">>, <<"Call-ID">>], JObj),
+    MsgId = wh_json:get_value([<<"Resource-Response">>, <<"Msg-ID">>], JObj),
+    ServerId = wh_json:get_value([<<"Resource-Response">>, <<"Server-ID">>], JObj),
+
+    Prop = [{<<"Call-ID">>, CallId}
+            ,{<<"Msg-ID">>, MsgId}
+            | wh_api:default_headers(Q, ?APP_NAME, ?APP_VERSION)
+           ],
+    wapi_dialplan:publish_originate_execute(ServerId, Prop).
+
 handle_event(JObj, State) ->
     #state{self=Pid} = State,
     lager:debug("received call event, ~p", [JObj]),
     case whapps_util:get_event_type(JObj) of
-        {<<"resource">>, <<"originate_uuid">>} ->
-            gen_listener:cast(Pid, {'originate_uuid'
-                                    ,wh_json:get_value(<<"Outbound-Call-ID">>, JObj)
-                                    ,wh_json:get_value(<<"Outbound-Call-Control-Queue">>, JObj)
-                              });
+        {<<"resource">>, <<"offnet_resp">>} ->
+            case wh_json:get_value(<<"Response-Message">>, JObj) of
+                <<"READY">> ->
+                    gen_listener:cast(Pid, {'originate_ready', JObj});
+                _ ->
+                    lager:info("Offnet request failed: ~p", [JObj]),
+                    gen_listener:cast(Pid, 'originate_failed')
+            end;
         {<<"resource">>, <<"originate_resp">>} ->
-            AppResponse = wh_json:get_first_defined([<<"Application-Response">> ,<<"Hangup-Cause">> ,<<"Error-Message">>], JObj),
-            NewCallId = 
-            case lists:member(AppResponse, ?SUCCESSFUL_HANGUP_CAUSES) of
-                'true' -> wh_json:get_value(<<"Call-ID">>, JObj);
-                'false' when AppResponse =:= 'undefined' -> wh_json:get_value(<<"Call-ID">>, JObj);
-                'false' -> 
-                    lager:error("Originate failed", [JObj]),
-                    'undefined'
-            end,
-            gen_listener:cast(Pid, {'outbound_call_originated', NewCallId});
+            case wh_json:get_value(<<"Application-Response">>, JObj) =:= <<"SUCCESS">> of
+                'true' -> gen_listener:cast(Pid, 'originate_success');
+                'false' -> gen_listener:cast(Pid, 'originate_failed')
+            end;
+        {<<"error">>, <<"originate_resp">>} ->
+            lager:debug("channel execution error while waiting for originate: ~s"
+                        ,[wh_util:to_binary(wh_json:encode(JObj))]),
+            gen_listener:cast(Pid, 'originate_failed');
         {<<"call_event">>, <<"CHANNEL_EXECUTE_COMPLETE">>} ->
             lager:debug("received CHANNEL_EXECUTE_COMPLETE event, app is ~p", [get_app(JObj)]),
             case get_app(JObj) of
@@ -238,11 +228,11 @@ handle_event(JObj, State) ->
             end;
         {<<"call_event">>, <<"CHANNEL_DESTROY">>} ->
             HangupCause = wh_json:get_value(<<"Hangup-Cause">>, JObj, <<"unknown">>),
-            gen_listener:cast(Pid, {'outbound_call_hangup', HangupCause});
+            gen_listener:cast(Pid, {'hangup', HangupCause});
         {<<"call_event">>, <<"CHANNEL_ANSWER">>} ->
-            gen_listener:cast(Pid, 'channel_answered');
+            gen_listener:cast(Pid, 'answered');
         _Else ->
-            lager:debug("jerry -- unhandled event ~p", [JObj])
+            lager:debug("unhandled event ~p", [JObj])
     end,
     {'reply', []}.
 
@@ -283,10 +273,230 @@ code_change(_OldVsn, State, _Extra) ->
 
 init([Server, Call, Type]) ->
     process_flag('trap_exit', 'true'),
-    {'ok', #state{call=Call
+    CallId = wh_util:rand_hex_binary(8),
+    put('callid', CallId),
+    {'ok', #state{call=whapps_call:set_call_id(CallId, Call)
                  ,type=Type
                  ,self=self()
                  ,server=Server
                  ,status='initial'
                  ,start_tstamp=wh_util:current_tstamp()}
     }.
+
+-spec build_offnet_request(wh_json:object(), whapps_call:call(), ne_binary()) -> wh_proplist().
+build_offnet_request(Data, Call, ResponseQueue) ->
+    {CIDNumber, CIDName} = get_caller_id(Data, Call),
+    props:filter_undefined([{<<"Resource-Type">>, <<"originate">>}
+                            ,{<<"Application-Name">>, <<"park">>}
+                            ,{<<"Outbound-Caller-ID-Name">>, CIDName}
+                            ,{<<"Outbound-Caller-ID-Number">>, CIDNumber}
+                            ,{<<"Msg-ID">>, wh_util:rand_hex_binary(6)}
+                            ,{<<"Account-ID">>, whapps_call:account_id(Call)}
+                            ,{<<"Account-Realm">>, whapps_call:from_realm(Call)}
+                            ,{<<"Media">>, wh_json:get_value(<<"Media">>, Data)}
+                            ,{<<"Timeout">>, wh_json:get_value(<<"timeout">>, Data)}
+                            ,{<<"Ringback">>, wh_json:get_value(<<"ringback">>, Data)}
+                            ,{<<"Format-From-URI">>, wh_json:is_true(<<"format_from_uri">>, Data)}
+                            ,{<<"Hunt-Account-ID">>, get_hunt_account_id(Data, Call)}
+                            ,{<<"Flags">>, get_flags(Data, Call)}
+                            ,{<<"Ignore-Early-Media">>, get_ignore_early_media(Data)}
+                            ,{<<"Force-Fax">>, get_force_fax(Call)}
+                            ,{<<"SIP-Headers">>,get_sip_headers(Data, Call)}
+                            ,{<<"To-DID">>, get_to_did(Data, Call)}
+                            ,{<<"From-URI-Realm">>, get_from_uri_realm(Data, Call)}
+                            ,{<<"Bypass-E164">>, get_bypass_e164(Data)}
+                            ,{<<"Diversions">>, get_diversions(Call)}
+                            ,{<<"Inception">>, get_inception(Call)}
+                            ,{<<"Outbound-Call-ID">>, whapps_call:call_id(Call)}
+                            ,{<<"Custom-Channel-Vars">>, wh_json:from_list([{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
+                                                              ,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
+                                                              ])}
+                            | wh_api:default_headers(ResponseQueue, ?APP_NAME, ?APP_VERSION)
+                           ]).
+
+
+-spec get_bypass_e164(wh_json:object()) -> boolean().
+get_bypass_e164(Data) ->
+    wh_json:is_true(<<"do_not_normalize">>, Data)
+        orelse wh_json:is_true(<<"bypass_e164">>, Data).
+
+-spec get_from_uri_realm(wh_json:object(), whapps_call:call()) -> api_binary().
+get_from_uri_realm(Data, Call) ->
+    case wh_json:get_ne_value(<<"from_uri_realm">>, Data) of
+        'undefined' -> maybe_get_call_from_realm(Call);
+        Realm -> Realm
+    end.
+
+-spec maybe_get_call_from_realm(whapps_call:call()) -> api_binary().
+maybe_get_call_from_realm(Call) ->
+    case whapps_call:from_realm(Call) of
+        'undefined' -> get_account_realm(Call);
+        Realm -> Realm
+    end.
+
+-spec get_account_realm(whapps_call:call()) -> api_binary().
+get_account_realm(Call) ->
+    AccountId = whapps_call:account_id(Call),
+    AccountDb = whapps_call:account_db(Call),
+    case couch_mgr:open_cache_doc(AccountDb, AccountId) of
+        {'ok', JObj} -> wh_json:get_value(<<"realm">>, JObj);
+        {'error', _} -> 'undefined'
+    end.
+
+
+-spec get_caller_id(wh_json:object(), whapps_call:call()) -> {api_binary(), api_binary()}.
+get_caller_id(Data, Call) ->
+    Type = wh_json:get_value(<<"caller_id_type">>, Data, <<"external">>),
+    cf_attributes:caller_id(Type, Call).
+
+-spec get_hunt_account_id(wh_json:object(), whapps_call:call()) -> api_binary().
+get_hunt_account_id(Data, Call) ->
+    case wh_json:is_true(<<"use_local_resources">>, Data, 'true') of
+        'false' -> 'undefined';
+        'true' ->
+            AccountId = whapps_call:account_id(Call),
+            wh_json:get_value(<<"hunt_account_id">>, Data, AccountId)
+    end.
+
+-spec get_to_did(wh_json:object(), whapps_call:call()) -> ne_binary().
+get_to_did(Data, Call) ->
+    case wh_json:is_true(<<"bypass_e164">>, Data) of
+        'false' -> get_to_did(Data, Call, whapps_call:request_user(Call));
+        'true' ->
+            Request = whapps_call:request(Call),
+            [RequestUser, _] = binary:split(Request, <<"@">>),
+            case wh_json:is_true(<<"do_not_normalize">>, Data) of
+                'false' -> get_to_did(Data, Call, RequestUser);
+                'true' -> RequestUser
+            end
+    end.
+
+-spec get_to_did(wh_json:object(), whapps_call:call(), ne_binary()) -> ne_binary().
+get_to_did(_Data, Call, Number) ->
+    case cf_endpoint:get(Call) of
+        {'ok', Endpoint} ->
+            case wh_json:get_value(<<"dial_plan">>, Endpoint, []) of
+                [] -> Number;
+                DialPlan -> cf_util:apply_dialplan(Number, DialPlan)
+            end;
+        {'error', _ } -> Number
+    end.
+
+-spec get_sip_headers(wh_json:object(), whapps_call:call()) -> api_object().
+get_sip_headers(Data, Call) ->
+    Routines = [fun(J) ->
+                        case wh_json:is_true(<<"emit_account_id">>, Data) of
+                            'false' -> J;
+                            'true' ->
+                                wh_json:set_value(<<"X-Account-ID">>, whapps_call:account_id(Call), J)
+                        end
+                end
+               ],
+    CustomHeaders = wh_json:get_value(<<"custom_sip_headers">>, Data, wh_json:new()),
+    JObj = lists:foldl(fun(F, J) -> F(J) end, CustomHeaders, Routines),
+    case wh_util:is_empty(JObj) of
+        'true' -> 'undefined';
+        'false' -> JObj
+    end.
+
+-spec get_ignore_early_media(wh_json:object()) -> api_binary().
+get_ignore_early_media(Data) ->
+    wh_util:to_binary(wh_json:is_true(<<"ignore_early_media">>, Data, <<"false">>)).
+
+-spec get_force_fax(whapps_call:call()) -> 'undefined' | boolean().
+get_force_fax(Call) ->
+    case cf_endpoint:get(Call) of
+        {'ok', JObj} -> wh_json:is_true([<<"media">>, <<"fax_option">>], JObj);
+        {'error', _} -> 'undefined'
+    end.
+
+-spec get_flags(wh_json:object(), whapps_call:call()) -> 'undefined' | ne_binaries().
+get_flags(Data, Call) ->
+    Routines = [fun get_endpoint_flags/3
+                ,fun get_flow_flags/3
+                ,fun get_flow_dynamic_flags/3
+                ,fun get_endpoint_dynamic_flags/3
+                ,fun get_account_dynamic_flags/3
+               ],
+    lists:foldl(fun(F, A) -> F(Data, Call, A) end, [], Routines).
+
+-spec get_endpoint_flags(wh_json:object(), whapps_call:call(), ne_binaries()) -> ne_binaries().
+get_endpoint_flags(_, Call, Flags) ->
+    case cf_endpoint:get(Call) of
+        {'error', _} -> Flags;
+        {'ok', JObj} ->
+            case wh_json:get_value(<<"outbound_flags">>, JObj) of
+                'undefined' -> Flags;
+                 EndpointFlags -> EndpointFlags ++ Flags
+            end
+    end.
+
+-spec get_flow_flags(wh_json:object(), whapps_call:call(), ne_binaries()) -> ne_binaries().
+get_flow_flags(Data, _, Flags) ->
+    case wh_json:get_value(<<"outbound_flags">>, Data) of
+        'undefined' -> Flags;
+        FlowFlags -> FlowFlags ++ Flags
+    end.
+
+-spec get_flow_dynamic_flags(wh_json:object(), whapps_call:call(), ne_binaries()) -> ne_binaries().
+get_flow_dynamic_flags(Data, Call, Flags) ->
+    case wh_json:get_value(<<"dynamic_flags">>, Data) of
+        'undefined' -> Flags;
+        DynamicFlags -> process_dynamic_flags(DynamicFlags, Flags, Call)
+    end.
+
+-spec get_endpoint_dynamic_flags(wh_json:object(), whapps_call:call(), ne_binaries()) -> ne_binaries().
+get_endpoint_dynamic_flags(_, Call, Flags) ->
+    case cf_endpoint:get(Call) of
+        {'error', _} -> Flags;
+        {'ok', JObj} ->
+            case wh_json:get_value(<<"dynamic_flags">>, JObj) of
+                'undefined' -> Flags;
+                 DynamicFlags ->
+                    process_dynamic_flags(DynamicFlags, Flags, Call)
+            end
+    end.
+
+-spec get_account_dynamic_flags(wh_json:object(), whapps_call:call(), ne_binaries()) -> ne_binaries().
+get_account_dynamic_flags(_, Call, Flags) ->
+    DynamicFlags = whapps_account_config:get(whapps_call:account_id(Call)
+                                             ,<<"callflow">>
+                                             ,<<"dynamic_flags">>
+                                             ,[]
+                                            ),
+    process_dynamic_flags(DynamicFlags, Flags, Call).
+
+-spec process_dynamic_flags(ne_binaries(), ne_binaries(), whapps_call:call()) -> ne_binaries().
+process_dynamic_flags([], Flags, _) -> Flags;
+process_dynamic_flags([DynamicFlag|DynamicFlags], Flags, Call) ->
+    case is_flag_exported(DynamicFlag) of
+        'false' -> process_dynamic_flags(DynamicFlags, Flags, Call);
+        'true' ->
+            Fun = wh_util:to_atom(DynamicFlag),
+            process_dynamic_flags(DynamicFlags, [whapps_call:Fun(Call)|Flags], Call)
+    end.
+
+-spec is_flag_exported(ne_binary()) -> boolean().
+is_flag_exported(Flag) ->
+    is_flag_exported(Flag, whapps_call:module_info('exports')).
+
+is_flag_exported(_, []) -> 'false';
+is_flag_exported(Flag, [{F, 1}|Funs]) ->
+    case wh_util:to_binary(F) =:= Flag of
+        'true' -> 'true';
+        'false' -> is_flag_exported(Flag, Funs)
+    end;
+is_flag_exported(Flag, [_|Funs]) -> is_flag_exported(Flag, Funs).
+
+-spec get_diversions(whapps_call:call()) -> 'undefined' | wh_json:object().
+get_diversions(Call) ->
+    case wh_json:get_value(<<"Diversions">>, whapps_call:custom_channel_vars(Call)) of
+        'undefined' -> 'undefined';
+        [] -> 'undefined';
+        Diversions ->  Diversions
+    end.
+
+-spec get_inception(whapps_call:call()) -> api_binary().
+get_inception(Call) ->
+    wh_json:get_value(<<"Inception">>, whapps_call:custom_channel_vars(Call)).
+

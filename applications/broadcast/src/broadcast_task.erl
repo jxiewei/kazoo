@@ -139,7 +139,7 @@ handle_cast({'start_participant', Moderator, [Number|Others]}, #state{account_id
     Call = whapps_call:exec([
                fun(C) -> whapps_call:set_authorizing_type(<<"user">>, C) end
                ,fun(C) -> whapps_call:set_authorizing_id(UserId, C) end
-               ,fun(C) -> whapps_call:set_request(<<FromUser/binary, <<"@">>/binary, Realm/binary>>, C) end
+               ,fun(C) -> whapps_call:set_request(<<Number/binary, <<"@">>/binary, Realm/binary>>, C) end
                ,fun(C) -> whapps_call:set_to(<<Number/binary, <<"@">>/binary, Realm/binary>>, C) end
                ,fun(C) -> whapps_call:set_account_db(AccountDb, C) end
                ,fun(C) -> whapps_call:set_account_id(AccountId, C) end
