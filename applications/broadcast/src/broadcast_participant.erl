@@ -125,6 +125,7 @@ handle_cast('originate_failed', State) ->
                                   ,hangup_tstamp=wh_util:current_tstamp()}};
 
 
+%% other end hangup
 handle_cast({'hangup', HangupCause}, State) ->
     lager:debug("Broadcast participant call hanged up"),
     Status = 
@@ -132,6 +133,7 @@ handle_cast({'hangup', HangupCause}, State) ->
         'online' -> 'offline';
         'succeeded' -> 'succeeded';
         'offline' -> 'offline';
+        'interrupted' -> 'interrupted';
         _ -> 'failed'
     end,
     {'stop', 'normal', State#state{status=Status
@@ -143,11 +145,13 @@ handle_cast({'play_completed', Result}, State) ->
     #state{call=Call} = State,
     whapps_call_command:hangup(Call),
     case Result of
+        %% normally completed
         <<"FILE PLAYED">> -> 
-            {'noreply', State#state{status='succeeded'}};
+            {'stop', 'normal', State#state{status='succeeded'}};
+        %% Interrupted by peer
         _ -> 
             lager:info("Broadcast playback may be interrupted by peer, result ~p", [Result]),
-            {'noreply', State#state{status='interrupted'}} 
+            {'stop', 'normal', State#state{status='interrupted'}} 
     end;
 
 
@@ -169,11 +173,12 @@ handle_cast('init', State) ->
     end,
     {'noreply', State};
 
+%% Our end stop brutally
 handle_cast('stop', State) ->
     lager:debug("Stopping broadcast participant"),
     #state{call=Call} = State,
     whapps_call_command:hangup(Call),
-    {'stop', {'shutdown', 'stopped'}, State};
+    {'stop', {'shutdown', 'stopped'}, State#state{status='interrupted'}};
 
 handle_cast(_Cast, State) ->
     lager:debug("unhandled cast: ~p", [_Cast]),
@@ -241,16 +246,13 @@ is_final_state('proceeding') -> 'false';
 is_final_state('online') -> 'false';
 is_final_state(_) -> 'true'.
 
-reason_to_final_state('normal') -> 'interrupted';
-reason_to_final_state('shutdown') -> 'interrupted';
-reason_to_final_state({'shutdown', _}) -> 'interrupted';
-reason_to_final_state(_) -> 'exception'.
-
 terminate(Reason, State) ->
     #state{call=Call, status=Status} = State, 
+
+    %%If call already terminated, honor it's state, otherwise use terminate reason.
     FinalState = case is_final_state(Status) of
         'true' -> Status;
-        'false' -> reason_to_final_state(Reason)
+        'false' -> 'interrupted'
     end,
     PartyLog = #partylog{
         tasklogid='undefined'
