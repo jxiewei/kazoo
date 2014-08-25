@@ -869,7 +869,7 @@ change_pin(#mailbox{mailbox_id=Id
                 invalid_pin(Box, Call)
         end
     catch
-        _:_ ->
+        _E:_R ->
             lager:info("new pin was invalid, trying again"),
             invalid_pin(Box, Call)
     end.
@@ -885,10 +885,8 @@ invalid_pin(Box, Call) ->
                                  {'ok', wh_json:object()} |
                                  {'error', _}.
 validate_box_schema(JObj) ->
-    case jesse:validate_with_schema(wh_json_schema:load(<<"vmboxes">>)
-                                    ,wh_json:public_fields(JObj)
-                                   )
-    of
+    {'ok', Schema} = wh_json_schema:load(<<"vmboxes">>),
+    case jesse:validate_with_schema(Schema, wh_json:public_fields(JObj)) of
         {'ok', _}=OK -> OK;
         {'error', _Errors} ->
             lager:debug("failed to validate vmbox schema: ~p", [_Errors]),
@@ -957,15 +955,14 @@ update_mailbox(#mailbox{mailbox_id=Id
             ,{<<"Call-ID">>, whapps_call:call_id(Call)}
             | wh_api:default_headers(?APP_NAME, ?APP_VERSION)
            ],
-
-    _ = case whapps_util:amqp_pool_request(Prop
+    _ = case whapps_util:amqp_pool_collect(Prop
                                            ,fun wapi_notifications:publish_voicemail/1
-                                           ,fun wapi_notifications:notify_update_v/1
-                                           ,15000
-                                          )
+                                           ,fun collecting/1
+                                           ,30000)
         of
-            {'ok', UpdateJObj} ->
-                maybe_save_meta(Length, Box, Call, MediaId, UpdateJObj);
+            {'ok', JObjs} ->
+                JObj = get_completed_msg(JObjs),
+                maybe_save_meta(Length, Box, Call, MediaId, JObj);
             {'error', _E} ->
                 lager:debug("notification error: ~p", [_E]),
                 save_meta(Length, Box, Call, MediaId)
@@ -973,6 +970,26 @@ update_mailbox(#mailbox{mailbox_id=Id
     timer:sleep(2500),
     _ = cf_util:unsolicited_owner_mwi_update(whapps_call:account_db(Call), OwnerId),
     'ok'.
+
+-spec collecting(wh_json:objects()) -> boolean().
+collecting([JObj|_]) ->
+    case wapi_notifications:notify_update_v(JObj) andalso wh_json:get_value(<<"Status">>, JObj) of
+        <<"completed">> -> 'true';
+        <<"failed">> -> 'true';
+        _ -> 'false'
+    end.
+
+-spec get_completed_msg(wh_json:objects()) -> wh_json:object().
+-spec get_completed_msg(wh_json:objects(), wh_json:object()) -> wh_json:object().
+get_completed_msg(JObjs) ->
+    get_completed_msg(JObjs, 'undefined').
+
+get_completed_msg([], Acc) -> Acc;
+get_completed_msg([JObj|JObjs], Acc) ->
+    case wh_json:get_value(<<"Status">>, JObj) of
+        <<"completed">> -> get_completed_msg([], JObj);
+        _ -> get_completed_msg(JObjs, Acc)
+    end.
 
 -spec get_caller_id_name(whapps_call:call()) -> ne_binary().
 get_caller_id_name(Call) ->

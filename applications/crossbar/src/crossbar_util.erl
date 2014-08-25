@@ -9,9 +9,17 @@
 %%%-------------------------------------------------------------------
 -module(crossbar_util).
 
--export([response/2, response/3, response/4, response/5]).
--export([response_deprecated/1, response_deprecated_redirect/2, response_deprecated_redirect/3
-         ,response_redirect/3, response_redirect/4
+-export([response/2
+         ,response/3
+         ,response/4
+         ,response/5
+        ]).
+-export([response_deprecated/1]).
+-export([response_deprecated_redirect/2
+         ,response_deprecated_redirect/3
+        ]).
+-export([response_redirect/3
+         ,response_redirect/4
         ]).
 -export([response_202/2]).
 -export([response_402/2]).
@@ -28,15 +36,27 @@
          ,response_auth/2
          ,response_auth/3
         ]).
--export([get_account_realm/1, get_account_realm/2]).
+-export([get_account_realm/1
+         ,get_account_realm/2
+        ]).
+-export([flush_registrations/1
+         ,flush_registration/2
+        ]).
 -export([move_account/2]).
 -export([get_descendants/1]).
 -export([get_tree/1]).
 -export([replicate_account_definition/1]).
--export([disable_account/1, enable_account/1, change_pvt_enabled/2]).
+-export([disable_account/1
+         ,enable_account/1
+         ,change_pvt_enabled/2
+        ]).
 -export([get_path/2]).
--export([get_user_lang/2, get_account_lang/1]).
--export([get_user_timezone/2, get_account_timezone/1]).
+-export([get_user_lang/2
+         ,get_account_lang/1
+        ]).
+-export([get_user_timezone/2
+         ,get_account_timezone/1
+        ]).
 -export([apply_response_map/2]).
 -export([maybe_remove_attachments/1]).
 
@@ -309,6 +329,22 @@ get_account_realm(Db, AccountId) ->
             lager:debug("error while looking up account realm: ~p", [R]),
             'undefined'
     end.
+
+-spec flush_registrations(ne_binary()) -> 'ok'.
+flush_registrations(Realm) ->
+    FlushCmd = [{<<"Realm">>, Realm}
+                | wh_api:default_headers(?APP_NAME, ?APP_VERSION)
+               ],
+    whapps_util:amqp_pool_send(FlushCmd, fun wapi_registration:publish_flush/1).
+
+-spec flush_registration(api_binary(), ne_binary()) -> 'ok'.
+flush_registration('undefined', _Realm) -> 'ok';
+flush_registration(Username, Realm) ->
+    FlushCmd = [{<<"Realm">>, Realm}
+                ,{<<"Username">>, Username}
+                | wh_api:default_headers(?APP_NAME, ?APP_VERSION)
+               ],
+    whapps_util:amqp_pool_send(FlushCmd, fun wapi_registration:publish_flush/1).
 
 %%--------------------------------------------------------------------
 %% @public
@@ -708,24 +744,10 @@ apply_response_map(Context, Map) ->
 
 -spec get_path(cowboy_req:req() | ne_binary(), ne_binary()) -> ne_binary().
 get_path(<<_/binary>> = RawPath, Relative) ->
-    PathTokensRev = lists:reverse(binary:split(RawPath, <<"/">>, ['global'])),
-    UrlTokens = binary:split(Relative, <<"/">>),
-
-    wh_util:join_binary(
-      lists:reverse(
-        lists:foldl(fun get_path_fold/2, PathTokensRev, UrlTokens)
-       ), <<"/">>);
+    wh_util:resolve_uri(RawPath, Relative);
 get_path(Req, Relative) ->
     {RawPath, _} = cowboy_req:path(Req),
     get_path(RawPath, Relative).
-
-get_path_fold(Segment, [<<>> | PathTokens]) ->
-    get_path_fold(Segment, PathTokens);
-get_path_fold(<<"..">>, []) -> [];
-get_path_fold(<<"..">>, [_ | PathTokens]) -> PathTokens;
-get_path_fold(<<".">>, PathTokens) -> PathTokens;
-get_path_fold(<<>>, PathTokens) -> PathTokens;
-get_path_fold(Segment, PathTokens) -> [Segment | PathTokens].
 
 -spec maybe_remove_attachments(cb_context:context()) -> cb_context:context().
 maybe_remove_attachments(Context) ->
@@ -811,11 +833,5 @@ year_month_sequence_test() ->
                  ,generate_year_month_sequence({2013, 11}
                                                ,{2014, 1}
                                               )).
-
-get_path_test() ->
-    RawPath = <<"/v1/accounts/acct_id/module">>,
-    Relative = <<"../other_mod">>,
-    ?assertEqual(get_path1(RawPath, Relative), <<"/v1/accounts/acct_id/other_mod">>),
-    ?assertEqual(get_path1(RawPath, <<Relative/binary, "/mod_id">>), <<"/v1/accounts/acct_id/other_mod/mod_id">>).
 
 -endif.

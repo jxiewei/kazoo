@@ -25,6 +25,8 @@
          ,update_pvt_parameters/2
          ,start_key/1, start_key/2
          ,pagination_page_size/0, pagination_page_size/1
+         ,has_qs_filter/1
+         ,filtered_doc_by_qs/3
         ]).
 
 -export([handle_json_success/2]).
@@ -37,6 +39,7 @@
                    ,fun add_pvt_account_db/2
                    ,fun add_pvt_created/2
                    ,fun add_pvt_modified/2
+                   ,fun add_pvt_request_id/2
                   ]).
 
 -define(PAGINATION_PAGE_SIZE, whapps_config:get_integer(?CONFIG_CAT
@@ -281,7 +284,7 @@ load_view(#load_view_params{view=View
             _V -> props:delete('include_docs', IncludeOptions)
         end,
 
-    case couch_mgr:get_results(Db, View, props:filter_undefined(ViewOptions)) of
+    case couch_mgr:get_results(Db, View, ViewOptions) of
         {'error', Error} ->
             handle_couch_mgr_errors(Error, View, Context);
         {'ok', JObjs} ->
@@ -795,6 +798,12 @@ maybe_apply_custom_filter(FilterFun, JObjs) ->
         (not wh_util:is_empty(JObj))
     ].
 
+%%--------------------------------------------------------------------
+%% @public
+%% @doc
+%%
+%% @end
+%%--------------------------------------------------------------------
 -spec filtered_doc_by_qs(wh_json:object(), boolean(), cb_context:context()) -> boolean().
 filtered_doc_by_qs(_JObj, 'false', _Context) -> 'true';
 filtered_doc_by_qs(JObj, 'true', Context) ->
@@ -913,7 +922,7 @@ handle_couch_mgr_errors(Else, _View, Context) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec update_pvt_parameters(wh_json:object() | wh_json:objects(), cb_context:context()) ->
-                                         wh_json:object() | wh_json:objects().
+                                   wh_json:object() | wh_json:objects().
 update_pvt_parameters(JObjs, Context) when is_list(JObjs) ->
     [update_pvt_parameters(JObj, Context) || JObj <- JObjs];
 update_pvt_parameters(JObj0, Context) ->
@@ -957,6 +966,11 @@ add_pvt_modified(JObj, _) ->
     Timestamp = calendar:datetime_to_gregorian_seconds(calendar:universal_time()),
     wh_json:set_value(<<"pvt_modified">>, Timestamp, JObj).
 
+-spec add_pvt_request_id(wh_json:object(), cb_context:context()) -> wh_json:object().
+add_pvt_request_id(JObj, Context) ->
+    RequestId = cb_context:req_id(Context),
+    wh_json:set_value(<<"pvt_request_id">>, RequestId, JObj).
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -968,7 +982,7 @@ extract_included_docs(JObjs) ->
     [wh_json:get_value(<<"doc">>, JObj) || JObj <- JObjs].
 
 %%--------------------------------------------------------------------
-%% @private
+%% @public
 %% @doc
 %% Given a context or query parameter json object determines if the
 %% request has a filter defined

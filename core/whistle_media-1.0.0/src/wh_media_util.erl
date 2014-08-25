@@ -10,7 +10,9 @@
 
 -export([recording_url/2]).
 -export([base_url/1, base_url/2, base_url/3]).
--export([convert_stream_type/1]).
+-export([convert_stream_type/1
+         ,normalize_media/3
+        ]).
 -export([media_path/1, media_path/2]).
 -export([max_recording_time_limit/0]).
 -export([get_prompt/1, get_prompt/2, get_prompt/3
@@ -28,9 +30,81 @@
 -define(AUTH_PASSWORD, whapps_config:get_string(?CONFIG_CAT, <<"proxy_password">>, wh_util:rand_hex_binary(8))).
 -define(USE_AUTH_STORE, whapps_config:get_is_true(?CONFIG_CAT, <<"authenticated_store">>, 'true')).
 
+-define(NORMALIZE_EXE, whapps_config:get_binary(?CONFIG_CAT, <<"normalize_executable">>, <<"sox">>)).
+-define(NORMALIZE_SOURCE_ARGS, whapps_config:get_binary(?CONFIG_CAT, <<"normalize_source_args">>, <<>>)).
+-define(NORMALIZE_DEST_ARGS, whapps_config:get_binary(?CONFIG_CAT, <<"normalize_destination_args">>, <<"-r 8000">>)).
+
+-type normalized_media() :: {'ok', iolist()} |
+                            {'error', ne_binary()}.
+-spec normalize_media(ne_binary(), ne_binary(), binary()) ->
+                             normalized_media().
+normalize_media(FromFormat, FromFormat, FileContents) ->
+    {'ok', FileContents};
+normalize_media(FromFormat, ToFormat, FileContents) ->
+    OldFlag = process_flag('trap_exit', 'true'),
+
+    Command = iolist_to_binary([?NORMALIZE_EXE
+                                ," -t ", FromFormat, " ", ?NORMALIZE_SOURCE_ARGS, " - "
+                                ," -t ", ToFormat, " ", ?NORMALIZE_DEST_ARGS, " - "
+                               ]),
+    PortOptions = ['binary'
+                   ,'exit_status'
+                   ,'use_stdio'
+                   ,'stderr_to_stdout'
+                  ],
+    Response =
+        try open_port({'spawn', wh_util:to_list(Command)}, PortOptions) of
+            Port ->
+                lager:debug("opened port ~p to sox with '~s'", [Port, Command]),
+                normalize_media(FileContents, Port)
+        catch
+            _E:_R ->
+                lager:debug("failed to open port with '~s': ~s: ~p", [Command, _E, _R]),
+                {'error', <<"failed to open conversion utility">>}
+        end,
+    process_flag('trap_exit', OldFlag),
+    Response.
+
+-spec normalize_media(binary(), port()) ->
+                             normalized_media().
+normalize_media(FileContents, Port) ->
+    try erlang:port_command(Port, FileContents) of
+        'true' ->
+            lager:debug("sent data to port"),
+            wait_for_results(Port)
+    catch
+        _E:_R ->
+            lager:debug("failed to send data to port: ~s: ~p", [_E, _R]),
+            catch erlang:port_close(Port),
+            {'error', <<"failed to communicate with conversion utility">>}
+    end.
+
+-spec wait_for_results(port()) ->  normalized_media().
+-spec wait_for_results(port(), iolist()) -> normalized_media().
+wait_for_results(Port) ->
+    wait_for_results(Port, []).
+wait_for_results(Port, Response) ->
+    receive
+        {Port, {'data', Msg}} ->
+            wait_for_results(Port, [Response | [Msg]]);
+        {Port, {'exit_status', 0}} ->
+            lager:debug("process exited successfully"),
+            {'ok', Response};
+        {Port, {'exit_status', _Err}} ->
+            lager:debug("process exited with status ~p", [_Err]),
+            {'error', iolist_to_binary(Response)};
+        {'EXIT', Port, _Reason} ->
+            lager:debug("port closed unexpectedly: ~p", [_Reason]),
+            {'error', iolist_to_binary(Response)}
+    after 20000 ->
+            lager:debug("timeout, sending error response: ~p", [Response]),
+            catch erlang:port_close(Port),
+            {'error', iolist_to_binary(Response)}
+    end.
+
 -spec recording_url(ne_binary(), wh_json:object()) -> ne_binary().
 recording_url(CallId, Data) ->
-    Format = wh_json:get_value(<<"format">>, Data, <<".mp3">>),
+    Format = wh_json:get_value(<<"format">>, Data, <<"mp3">>),
     Url = wh_json:get_value(<<"url">>, Data, <<>>),
     <<Url/binary, "call_recording_", CallId/binary, ".", Format/binary>>.
 
@@ -118,6 +192,8 @@ media_path(Path, Call) ->
 prompt_path(PromptId) ->
     prompt_path(?WH_MEDIA_DB, PromptId).
 
+prompt_path(Db, <<"/system_media/", PromptId/binary>>) ->
+    prompt_path(Db, PromptId);
 prompt_path(Db, PromptId) ->
     wh_util:join_binary([<<>>, Db, PromptId], <<"/">>).
 
@@ -125,6 +201,8 @@ prompt_path(Db, PromptId) ->
 -spec prompt_id(ne_binary(), api_binary()) -> ne_binary().
 prompt_id(PromptId) -> prompt_id(PromptId, 'undefined').
 
+prompt_id(<<"/system_media/", PromptId/binary>>, Lang) ->
+    prompt_id(PromptId, Lang);
 prompt_id(PromptId, 'undefined') -> PromptId;
 prompt_id(PromptId, <<>>) -> PromptId;
 prompt_id(PromptId, Lang) ->
@@ -149,6 +227,8 @@ get_prompt(Name, Call) ->
                ,Call
               ).
 
+get_prompt(<<"/system_media/", Name/binary>>, Lang, Call) ->
+    get_prompt(Name, Lang, Call);
 get_prompt(Name, Lang, 'undefined') ->
     get_system_prompt(Name, Lang);
 get_prompt(Name, 'undefined', Call) ->
@@ -156,6 +236,8 @@ get_prompt(Name, 'undefined', Call) ->
 get_prompt(Name, Lang, Call) ->
     get_account_prompt(Name, Lang, Call).
 
+-spec get_account_prompt(ne_binary(), api_binary(), whapps_call:call()) -> api_binary().
+-spec get_account_prompt(ne_binary(), api_binary(), whapps_call:call(), ne_binary()) -> api_binary().
 %% tries account default, then system
 get_account_prompt(Name, 'undefined', Call) ->
     PromptId = prompt_id(Name),
@@ -169,7 +251,7 @@ get_account_prompt(Name, <<_Primary:2/binary>> = Lang, Call) ->
     PromptId = prompt_id(Name, Lang),
     lager:debug("getting account prompt for '~s'", [PromptId]),
     case lookup_prompt(whapps_call:account_db(Call), PromptId) of
-        {'error', 'not_found'} -> get_account_prompt(Name, 'undefined', Call);
+        {'error', 'not_found'} -> get_account_prompt(Name, 'undefined', Call, Lang);
         {'ok', _} -> prompt_path(whapps_call:account_id(Call), PromptId)
     end;
 %% First tries "en-US" or "fr-CA", etc, then tries "en", "fr", etc.
@@ -177,7 +259,7 @@ get_account_prompt(Name, <<Primary:2/binary, "-", _SubTag:2/binary>> = Lang, Cal
     PromptId = prompt_id(Name, Lang),
     lager:debug("getting account prompt for '~s'", [PromptId]),
     case lookup_prompt(whapps_call:account_db(Call), PromptId) of
-        {'error', 'not_found'} -> get_account_prompt(Name, Primary, Call);
+        {'error', 'not_found'} -> get_account_prompt(Name, Primary, Call, Lang);
         {'ok', _} -> prompt_path(whapps_call:account_id(Call), PromptId)
     end;
 %% First tries "en-us_fr-fr", then "en-us"
@@ -185,7 +267,7 @@ get_account_prompt(Name, <<Primary:5/binary, "_", _Secondary:5/binary>> = Lang, 
     PromptId = prompt_id(Name, Lang),
     lager:debug("getting account prompt for '~s'", [PromptId]),
     case lookup_prompt(whapps_call:account_db(Call), PromptId) of
-        {'error', 'not_found'} -> get_account_prompt(Name, Primary, Call);
+        {'error', 'not_found'} -> get_account_prompt(Name, Primary, Call, Lang);
         {'ok', _} -> prompt_path(whapps_call:account_id(Call), PromptId)
     end;
 %% Matches anything else, then tries account default
@@ -198,12 +280,58 @@ get_account_prompt(Name, Lang, Call) ->
         {'ok', _} -> prompt_path(whapps_call:account_id(Call), PromptId)
     end.
 
+get_account_prompt(Name, 'undefined', Call, OriginalLang) ->
+    PromptId = prompt_id(Name),
+    lager:debug("getting account prompt for '~s'", [PromptId]),
+    case lookup_prompt(whapps_call:account_db(Call), PromptId) of
+        {'error', 'not_found'} -> get_prompt(Name, OriginalLang, 'undefined');
+        {'ok', _} -> prompt_path(whapps_call:account_id(Call), PromptId)
+    end;
+get_account_prompt(Name, <<_:2/binary>> = Primary, Call, Original) ->
+    PromptId = prompt_id(Name, Primary),
+    lager:debug("getting account prompt for '~s'", [PromptId]),
+
+    case lookup_prompt(whapps_call:account_db(Call), PromptId) of
+        {'error', 'not_found'} -> get_account_prompt(Name, 'undefined', Call, Original);
+        {'ok', _} -> prompt_path(whapps_call:account_id(Call), PromptId)
+    end;
+get_account_prompt(Name, <<Primary:2/binary, "-", _Secondary:2/binary>> = Lang, Call, Original) ->
+    PromptId = prompt_id(Name, Lang),
+    lager:debug("getting account prompt for '~s'", [PromptId]),
+
+    case lookup_prompt(whapps_call:account_db(Call), PromptId) of
+        {'error', 'not_found'} -> get_account_prompt(Name, Primary, Call, Original);
+        {'ok', _} -> prompt_path(whapps_call:account_id(Call), PromptId)
+    end;
+get_account_prompt(Name, Lang, Call, OriginalLang) ->
+    PromptId = prompt_id(Name, Lang),
+    lager:debug("getting account prompt for '~s'", [PromptId]),
+
+    case lookup_prompt(whapps_call:account_db(Call), PromptId) of
+        {'error', 'not_found'} -> get_account_prompt(Name, 'undefined', Call, OriginalLang);
+        {'ok', _} -> prompt_path(whapps_call:account_id(Call), PromptId)
+    end.
+
 -spec lookup_prompt(ne_binary(), ne_binary()) ->
                            {'ok', wh_json:object()} |
                            {'error', 'not_found'}.
 lookup_prompt(Db, Id) ->
-    couch_mgr:open_cache_doc(Db, Id).
+    case couch_mgr:open_cache_doc(Db, Id) of
+        {'ok', Doc} ->
+            prompt_is_usable(Doc);
+        Error -> Error
+    end.
 
+-spec prompt_is_usable(wh_json:object()) ->
+                              {'ok', wh_json:object()} |
+                              {'error', 'not_found'}.
+prompt_is_usable(Doc) ->
+    case wh_json:is_true(<<"pvt_deleted">>, Doc, 'false') of
+        'true' -> {'error', 'not_found'};
+        'false' -> {'ok', Doc}
+    end.
+
+-spec get_system_prompt(ne_binary(), api_binary()) -> api_binary().
 get_system_prompt(Name, 'undefined') ->
     PromptId = prompt_id(Name),
     lager:debug("getting system prompt for '~s'", [PromptId]),
@@ -251,19 +379,19 @@ default_prompt_language() ->
     default_prompt_language(<<"en-us">>).
 default_prompt_language(Default) ->
     wh_util:to_lower_binary(
-      whapps_config:get(?WHS_CONFIG_CAT, <<"default_language">>, Default)
+      whapps_config:get(?WHS_CONFIG_CAT, ?PROMPT_LANGUAGE_KEY, Default)
      ).
 
 -spec prompt_language(api_binary(), ne_binary()) -> ne_binary().
 prompt_language('undefined') -> default_prompt_language();
 prompt_language(<<_/binary>> = AccountId) ->
     wh_util:to_lower_binary(
-      whapps_account_config:get(AccountId, ?WHS_CONFIG_CAT, <<"default_language">>, default_prompt_language())
+      whapps_account_config:get(AccountId, ?WHS_CONFIG_CAT, ?PROMPT_LANGUAGE_KEY, default_prompt_language())
      ).
 
 prompt_language('undefined', Default) ->
     default_prompt_language(Default);
 prompt_language(<<_/binary>> = AccountId, Default) ->
     wh_util:to_lower_binary(
-      whapps_account_config:get(AccountId, ?WHS_CONFIG_CAT, <<"default_language">>, wh_util:to_lower_binary(Default))
+      whapps_account_config:get(AccountId, ?WHS_CONFIG_CAT, ?PROMPT_LANGUAGE_KEY, wh_util:to_lower_binary(Default))
      ).

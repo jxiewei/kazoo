@@ -182,7 +182,7 @@ find_hook(JObj) ->
                       ).
 
 -spec handle_channel_event(wh_json:object(), wh_proplist()) -> 'ok'.
-handle_channel_event(JObj, _) ->
+handle_channel_event(JObj, _Props) ->
     HookEvent = hook_event_name(wh_json:get_value(<<"Event-Name">>, JObj)),
     case wh_hooks_util:lookup_account_id(JObj) of
         {'error', _R} ->
@@ -218,12 +218,17 @@ format_event(JObj, AccountId, <<"CHANNEL_ANSWER">>) ->
                       ,base_hook_event(JObj, AccountId)
                      );
 format_event(JObj, AccountId, <<"CHANNEL_DESTROY">>) ->
-    wh_json:set_value(<<"hook_event">>, <<"channel_destroy">>
-                      ,base_hook_event(JObj, AccountId)
-                     ).
+    base_hook_event(JObj, AccountId
+                    ,[{<<"hook_event">>, <<"channel_destroy">>}
+                      ,{<<"hangup_cause">>, wh_json:get_value(<<"Hangup-Cause">>, JObj)}
+                      ,{<<"hangup_code">>, wh_json:get_value(<<"Hangup-Code">>, JObj)}
+                     ]).
 
 -spec base_hook_event(wh_json:object(), api_binary()) -> wh_json:object().
+-spec base_hook_event(wh_json:object(), api_binary(), wh_proplist()) -> wh_json:object().
 base_hook_event(JObj, AccountId) ->
+    base_hook_event(JObj, AccountId, []).
+base_hook_event(JObj, AccountId, Acc) ->
     wh_json:from_list(
       props:filter_undefined(
         [{<<"call_direction">>, wh_json:get_value(<<"Call-Direction">>, JObj)}
@@ -235,6 +240,11 @@ base_hook_event(JObj, AccountId) ->
          ,{<<"inception">>, wh_json:get_value(<<"Inception">>, JObj)}
          ,{<<"call_id">>, wh_json:get_value(<<"Call-ID">>, JObj)}
          ,{<<"other_leg_call_id">>, wh_json:get_value(<<"Other-Leg-Call-ID">>, JObj)}
+         ,{<<"caller_id_name">>, wh_json:get_value(<<"Caller-ID-Name">>, JObj)}
+         ,{<<"caller_id_number">>, wh_json:get_value(<<"Caller-ID-Number">>, JObj)}
+         ,{<<"callee_id_name">>, wh_json:get_value(<<"Callee-ID-Name">>, JObj)}
+         ,{<<"callee_id_number">>, wh_json:get_value(<<"Callee-ID-Number">>, JObj)}
+         | Acc
         ])).
 
 -spec hooks_configured() -> 'ok'.
@@ -362,7 +372,10 @@ handle_info({'ETS-TRANSFER', _TblId, _From, _Data}, State) ->
     spawn(?MODULE, 'load_hooks', [self()]),
     {'noreply', State};
 handle_info(?HOOK_EVT(AccountId, EventType, JObj), State) ->
-    _ = spawn(?MODULE, 'maybe_handle_channel_event', [AccountId, EventType, JObj]),
+    _ = spawn(?MODULE
+              ,'maybe_handle_channel_event'
+              ,[AccountId, EventType, JObj]
+             ),
     {'noreply', State};
 handle_info(_Info, State) ->
     lager:debug("unhandled msg: ~p", [_Info]),
@@ -456,8 +469,7 @@ init_mods([Acct|Accts], Year, Month) ->
 -spec init_mod(wh_json:object(), wh_year(), wh_month()) -> 'ok'.
 init_mod(Acct, Year, Month) ->
     Db = wh_util:format_account_id(wh_json:get_value(<<"key">>, Acct), Year, Month),
-    _ = couch_mgr:db_create(Db),
-    _ = couch_mgr:revise_doc_from_file(Db, 'crossbar', <<"views/webhooks.json">>),
+    kazoo_modb:create(Db),
     lager:debug("updated account_mod ~s", [Db]).
 
 -spec init_webhooks() -> 'ok'.

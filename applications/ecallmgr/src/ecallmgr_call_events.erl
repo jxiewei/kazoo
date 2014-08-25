@@ -580,6 +580,8 @@ generic_call_event_props(Props) ->
      ,{<<"Replaced-By">>, props:get_value(<<"att_xfer_replaced_by">>, Props)}
      ,{<<"Custom-Channel-Vars">>, wh_json:from_list(ecallmgr_util:custom_channel_vars(Props))}
      ,{<<"Custom-SIP-Headers">>, wh_json:from_list(ecallmgr_util:custom_sip_headers(Props))}
+     ,{<<"From-Tag">>, props:get_value(<<"variable_sip_from_tag">>, Props)}
+     ,{<<"To-Tag">>, props:get_value(<<"variable_sip_to_tag">>, Props)}
      | wh_api:default_headers(?APP_NAME, ?APP_VERSION)
     ].
 
@@ -678,7 +680,7 @@ specific_call_event_props(<<"CHANNEL_DESTROY">>, _, Props) ->
      ,{<<"Billing-Seconds">>, props:get_value(<<"variable_billsec">>, Props)}
      ,{<<"Ringing-Seconds">>, props:get_value(<<"variable_progresssec">>, Props)}
      ,{<<"User-Agent">>, props:get_value(<<"variable_sip_user_agent">>, Props)}
-     ,{<<"Fax-Info">>, maybe_fax_specific(Props)}     
+     ,{<<"Fax-Info">>, maybe_fax_specific(Props)}
     ];
 specific_call_event_props(<<"RECORD_STOP">>, _, Props) ->
     [{<<"Application-Name">>, <<"record">>}
@@ -699,6 +701,8 @@ specific_call_event_props(_, <<"play_and_get_digits">>, Props) ->
     [{<<"Application-Name">>, <<"play_and_collect_digits">>}
      ,{<<"Application-Response">>, props:get_value(<<"variable_collected_digits">>, Props, <<"">>)}
     ];
+specific_call_event_props(<<"FAX_DETECTED">>, _, _Props) ->
+    [{<<"Application-Name">>, <<"fax_detection">>}];
 specific_call_event_props(<<"CHANNEL_FAX_STATUS">>, <<"rxfax", Event/binary>>, Prop) ->
     [{<<"Application-Name">>, <<"receive_fax">>}
     ,{<<"Application-Event">>, Event}
@@ -772,7 +776,7 @@ fax_specific(Props) ->
        ,{<<"Fax-Identity-Number">>, props:get_value(<<"variable_fax_ident">>, Props)}
        ,{<<"Fax-Identity-Name">>, props:get_value(<<"variable_fax_header">>, Props)}
        ,{<<"Fax-Doc-ID">>, props:get_value(<<"variable_fax_doc_id">>, Props)}
-       ,{<<"Fax-Doc-DB">>, props:get_value(<<"variable_fax_doc_database">>, Props)}      
+       ,{<<"Fax-Doc-DB">>, props:get_value(<<"variable_fax_doc_database">>, Props)}
        ]).
 
 -spec should_publish(ne_binary(), ne_binary(), boolean()) -> boolean().
@@ -792,6 +796,10 @@ should_publish(<<"CHANNEL_EXECUTE", _/binary>>, Application, _) ->
 should_publish(_, <<"transfer">>, _) ->
     'true';
 should_publish(<<"CHANNEL_FAX_STATUS">>, _, _) ->
+    'true';
+should_publish(<<"FAX_DETECTED">>, _, _) ->
+    'true';
+should_publish(<<"DETECTED_TONE">>, _, _) ->
     'true';
 should_publish(EventName, _A, _) ->
     lists:member(EventName, ?CALL_EVENTS).
@@ -841,9 +849,18 @@ get_event_name(Props) ->
         <<"spandsp::txfax", _/binary>> -> <<"CHANNEL_FAX_STATUS">>;
         <<"spandsp::rxfax", _/binary>> -> <<"CHANNEL_FAX_STATUS">>;
         _Else ->
-            props:get_first_defined([<<"whistle_event_name">>
-                                     ,<<"Event-Name">>
-                                    ], Props)
+            case  props:get_first_defined([<<"whistle_event_name">>
+                                           ,<<"Event-Name">>
+                                          ], Props)
+            of
+                <<"DETECTED_TONE">> ->
+                    lager:debug("DETECTED TONE"),
+                    case props:get_value(<<"Detected-Fax-Tone">>, Props) of
+                        'undefined' -> <<"DETECTED_TONE">>;
+                        _FaxDetected -> <<"FAX_DETECTED">>
+                    end;
+                Event -> Event
+            end
     end.
 
 -spec get_application_name(wh_proplist()) -> api_binary().

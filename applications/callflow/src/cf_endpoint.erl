@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% @copyright (C) 2011-2013, 2600Hz INC
+%%% @copyright (C) 2011-2014, 2600Hz INC
 %%% @doc
 %%%
 %%% @end
@@ -27,6 +27,7 @@
 -define(DEFAULT_MOBILE_SUFFIX, <<"">>).
 -define(DEFAULT_MOBILE_REALM, <<"mobile.k.zswitch.net">>).
 -define(DEFAULT_MOBILE_PATH, <<"">>).
+-define(DEFAULT_MOBILE_CODECS, [<<"PCMU">>]).
 
 %%--------------------------------------------------------------------
 %% @public
@@ -820,6 +821,7 @@ create_mobile_endpoint(Endpoint, Properties, Call) ->
             lager:info("unable to build mobile endpoint: ~s", [_R]),
             Error;
         Route ->
+            Codecs = whapps_config:get(?CF_MOBILE_CONFIG_CAT, <<"codecs">>, ?DEFAULT_MOBILE_CODECS),
             Prop = [{<<"Invite-Format">>, <<"route">>}
                     ,{<<"Ignore-Early-Media">>, <<"true">>}
                     ,{<<"Route">>, Route}
@@ -828,6 +830,7 @@ create_mobile_endpoint(Endpoint, Properties, Call) ->
                     ,{<<"Endpoint-Delay">>, get_delay(Properties)}
                     ,{<<"Presence-ID">>, cf_attributes:presence_id(Endpoint, Call)}
                     ,{<<"SIP-Headers">>, generate_sip_headers(Endpoint, Call)}
+                    ,{<<"Codecs">>, Codecs}
                     ,{<<"Custom-Channel-Vars">>, generate_ccvs(Endpoint, Call, wh_json:new())}
                    ],
             wh_json:from_list(props:filter_undefined(Prop))
@@ -960,7 +963,8 @@ generate_ccvs(Endpoint, Call, CallFwd) ->
                                 lager:info("call forwarding configured to require key press"),
                                 Confirm = [{<<"Confirm-Key">>, <<"1">>}
                                            ,{<<"Confirm-Cancel-Timeout">>, <<"2">>}
-                                           ,{<<"Confirm-File">>, ?CONFIRM_FILE}],
+                                           ,{<<"Confirm-File">>, ?CONFIRM_FILE}
+                                          ],
                                 wh_json:merge_jobjs(wh_json:from_list(Confirm), J)
                         end
                 end

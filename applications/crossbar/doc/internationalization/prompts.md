@@ -1,7 +1,11 @@
 /*
 Section: Internationalization
+
 Title: Prompts
+
 Language: en-US
+
+Sponsors: CloudPBX
 */
 
 Kazoo provides many prompts, such as during voicemail, to instruct callers on things to do. The default prompts that ship with Kazoo are provided in English, but as is often the case, supporting callers who don't speak English requires alternative language prompts.
@@ -11,6 +15,10 @@ Similar to i18n efforts on the front end, Kazoo is now configurable to provide t
 * The account processing the call
 * Manually set during a callflow
 * The default system language
+
+Feature enhancements to support multi-lingual media prompts have been proudly sponsored by [CloudPBX Inc.](http://cloudpbx.ca)
+
+L'amélioration des différents messages vocaux multilingues a été rendu possible par [CloudPBX Inc.](http://cloudpbx.ca), qui ont fièrement commandité le développement nécessaire.
 
 ## Prompt Installation
 
@@ -51,15 +59,19 @@ To do so, use the standard `PUT /media` but include `prompt_id` in the data payl
 
     curl -v -X PUT -H "X-Auth-Token: {AUTH_TOKEN}" http://server.com:8000/v2/accounts/{ACCOUNT_ID}/media -d '{"data":{"streamable":true,"name":"File","description":"Enter Pin prompt","prompt_id":"vm-enter_pin", "language":"x-pig-latin"}}'
 
-*Note*: Remember that you can set the `language` key on the account definition to default to a different language than the system.
+#### Set the account's language
 
-#### System Prompts via Crossbar
+Currently, a SUP command is required to set the account's language: `sup whapps_account_config {ACCOUNT_ID} media default_language fr-ca`
+
+You can test what language will be selected for an account (barring a callflow language action changing it) thusly: `sup wh_media_util prompt_language {ACCOUNT_ID}`
+
+### System Prompts via Crossbar
 
 If you are a superduper admin, you can also manipulate the system_media prompts via Crossbar. Simply remove the `/accounts/{ACCOUNT_ID}` from the URL to operate against the system's prompts.
 
 ### Languages supported
 
-While we encourage you to use proper RFC [langauge tags](http://www.w3.org/Protocols/rfc2616/rfc2616-sec3.html#sec3.10) for identifying prompts, there is no system limitation. If the language to be used is "en-US", the system will first try to find "en-US" then fall back to "en" prompts. If the language is "fr-FR", the system will try "fr-fr" and then "fr". However, nothing stops you from doing dual-language prompts (where both languages are in one media file) and using "fr-fr_en-us". In this case, "fr-fr_en-us" will be tried, then "fr-fr", and finally "fr".
+While we encourage you to use proper RFC [language tags](http://www.w3.org/Protocols/rfc2616/rfc2616-sec3.html#sec3.10) for identifying prompts, there is no system limitation. If the language to be used is "en-US", the system will first try to find "en-US" then fall back to "en" prompts. If the language is "fr-FR", the system will try "fr-fr" and then "fr". However, nothing stops you from doing dual-language prompts (where both languages are in one media file) and using "fr-fr_en-us". In this case, "fr-fr_en-us" will be tried, then "fr-fr", and finally "fr".
 
 ### Existing Prompts
 
@@ -84,4 +96,4 @@ Add the `language` callflow action before a branch to set what language will be 
      }
     }
 
-This will override the account and system langauges. If no language is specified, the account's language will be used; if that is missing, the system default language will be used.
+This will override the account and system languages. If no language is specified, the account's language will be used; if that is missing, the system default language will be used.

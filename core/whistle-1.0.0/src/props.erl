@@ -16,6 +16,7 @@
          ,get_integer_value/2, get_integer_value/3
          ,get_atom_value/2, get_atom_value/3
          ,get_binary_value/2, get_binary_value/3
+         ,get_ne_binary_value/2, get_ne_binary_value/3
          ,get_is_true/2, get_is_true/3, is_true/2, is_true/3
          ,get_is_false/2, get_is_false/3, is_false/2, is_false/3
          ,get_keys/1
@@ -66,11 +67,21 @@ filter(Props, Term) when is_list(Props) ->
 
 -spec filter_empty(wh_proplist()) -> wh_proplist().
 filter_empty(Props) ->
-    [KV || {_, V}=KV <- Props, (not wh_util:is_empty(V))].
+    [KV || KV <- Props,
+           case KV of
+               {_, V} -> not wh_util:is_empty(V);
+               _V -> 'true'
+           end
+    ].
 
 -spec filter_undefined(wh_proplist()) -> wh_proplist().
 filter_undefined(Props) ->
-    [KV || {_, V}=KV <- Props, V =/= 'undefined'].
+    [KV || KV <- Props,
+           case KV of
+               {_, 'undefined'} -> 'false';
+               _ -> 'true'
+           end
+    ].
 
 -spec get_value(wh_proplist_key(), wh_proplist()) -> term().
 -spec get_value(wh_proplist_key(), wh_proplist(), Default) -> Default | term().
@@ -161,6 +172,18 @@ get_binary_value(Key, Props) ->
 get_binary_value(Key, Props, Default) ->
     case ?MODULE:get_value(Key, Props) of
         'undefined' -> Default;
+        V -> wh_util:to_binary(V)
+    end.
+
+-spec get_ne_binary_value(wh_proplist_key(), wh_proplist()) -> api_binary().
+-spec get_ne_binary_value(wh_proplist_key(), wh_proplist(), Default) ->
+                              ne_binary() | Default.
+get_ne_binary_value(Key, Props) ->
+    get_ne_binary_value(Key, Props, 'undefined').
+get_ne_binary_value(Key, Props, Default) ->
+    case ?MODULE:get_value(Key, Props) of
+        'undefined' -> Default;
+        <<>> -> Default;
         V -> wh_util:to_binary(V)
     end.
 
@@ -269,9 +292,13 @@ filter_test() ->
 filter_empty_test() ->
     ?assertEqual([], filter_empty([])),
     ?assertEqual([{a, 10}, {b, 8}, {c, 6}], filter_empty([{a, 10}, {b, 8}, {c, 6}])),
-    ?assertEqual([], filter_empty([{a, 0}, {b, []}, {c, <<>>}, {z, undefined}])).
+    ?assertEqual([], filter_empty([{a, 0}, {b, []}, {c, <<>>}, {z, undefined}])),
+    ?assertEqual(['a'], filter_empty(['a'])),
+    ?assertEqual(['a'], filter_empty(['a', {'b', 0}])).
 
 filter_undefined_test() ->
+    ?assertEqual(['a'], filter_undefined(['a'])),
+
     ?assertEqual([], filter_undefined([])),
     ?assertEqual([{a, 10}, {b, 8}, {c, 6}], filter_undefined([{a, 10}, {b, 8}, {c, 6}])),
     ?assertEqual([{a, 0}, {b, []}, {c, <<>>}], filter_undefined([{a, 0}, {b, []}, {c, <<>>}, {z, undefined}])).

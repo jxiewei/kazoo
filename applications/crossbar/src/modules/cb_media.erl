@@ -44,7 +44,9 @@
 -define(CB_LIST, <<"media/crossbar_listing">>).
 
 -define(MOD_CONFIG_CAT, <<(?CONFIG_CAT)/binary, ".media">>).
+
 -define(DEFAULT_VOICE, whapps_config:get(<<"speech">>, <<"tts_default_voice">>, <<"female/en-US">>)).
+-define(NORMALIZATION_FORMAT, whapps_config:get(?MOD_CONFIG_CAT, <<"normalization_format">>, <<"mp3">>)).
 
 %%%===================================================================
 %%% API
@@ -150,7 +152,7 @@ authorize_media(_Context, _Nouns, _AccountId) ->
 -spec content_types_provided(cb_context:context(), path_token(), path_token(), http_method()) ->
                                     cb_context:context().
 content_types_provided(Context, MediaId, ?BIN_DATA) ->
-    content_types_provided(Context, MediaId, ?BIN_DATA, cb_context:req_verb(Context)).
+    content_types_provided(Context, cow_qs:urlencode(MediaId), ?BIN_DATA, cb_context:req_verb(Context)).
 
 content_types_provided(Context, MediaId, ?BIN_DATA, ?HTTP_GET) ->
     Context1 = load_media_meta(Context, MediaId),
@@ -163,7 +165,8 @@ content_types_provided(Context, MediaId, ?BIN_DATA, ?HTTP_GET) ->
                     CT = wh_json:get_value([<<"_attachments">>, Attachment, <<"content_type">>], JObj),
                     [Type, SubType] = binary:split(CT, <<"/">>),
                     cb_context:set_content_types_provided(Context, [{'to_binary', [{Type, SubType}]}])
-            end
+            end;
+        _Status -> Context1
     end;
 content_types_provided(Context, _MediaId, ?BIN_DATA, _Verb) ->
     Context.
@@ -253,26 +256,94 @@ validate_media_binary(Context, MediaId, ?HTTP_POST, [{_Filename, FileObj}]) ->
     lager:debug("loaded media meta for '~s'", [MediaId]),
     case cb_context:resp_status(Context1) of
         'success' ->
-            CT = wh_json:get_value([<<"headers">>, <<"content_type">>], FileObj, <<"application/octet-stream">>),
-            Size = wh_json:get_integer_value([<<"headers">>, <<"content_length">>]
-                                             ,FileObj
-                                             ,byte_size(wh_json:get_value(<<"contents">>, FileObj, <<>>))
-                                            ),
-
-            Props = [{<<"content_type">>, CT}
-                     ,{<<"content_length">>, Size}
-                     ,{<<"media_source">>, <<"recording">>}
-                    ],
-            validate_request(MediaId
-                             ,cb_context:set_req_data(Context1
-                                                      ,wh_json:set_values(Props, cb_context:doc(Context1))
-                                                     )
-                            );
+            maybe_normalize_upload(Context1, MediaId, FileObj);
         _Status -> Context1
     end;
 validate_media_binary(Context, _MediaId, ?HTTP_POST, _Files) ->
     Message = <<"please provide a single media file">>,
     cb_context:add_validation_error(<<"file">>, <<"maxItems">>, Message, Context).
+
+-spec maybe_normalize_upload(cb_context:context(), ne_binary(), wh_json:object()) -> cb_context:context().
+maybe_normalize_upload(Context, MediaId, FileJObj) ->
+    case whapps_config:get_is_true(?MOD_CONFIG_CAT, <<"normalize_media">>, 'false') of
+        'true' ->
+            lager:debug("normalizing uploaded media"),
+            normalize_upload(Context, MediaId, FileJObj);
+        'false' ->
+            lager:debug("normalization not enabled, leaving upload as-is"),
+            validate_upload(Context, MediaId, FileJObj)
+    end.
+
+-spec normalize_upload(cb_context:context(), ne_binary(), wh_json:object()) ->
+                              cb_context:context().
+-spec normalize_upload(cb_context:context(), ne_binary(), wh_json:object(), api_binary()) ->
+                              cb_context:context().
+normalize_upload(Context, MediaId, FileJObj) ->
+    normalize_upload(Context, MediaId, FileJObj, wh_json:get_value([<<"headers">>, <<"content_type">>], FileJObj)).
+
+normalize_upload(Context, MediaId, FileJObj, UploadContentType) ->
+    FromExt = cb_modules_util:content_type_to_extension(UploadContentType),
+    ToExt =  ?NORMALIZATION_FORMAT,
+
+    lager:info("upload is of type '~s', normalizing from ~s to ~s"
+               ,[UploadContentType, FromExt, ToExt]
+              ),
+
+    case wh_media_util:normalize_media(FromExt
+                                       ,ToExt
+                                       ,wh_json:get_value(<<"contents">>, FileJObj)
+                                      )
+    of
+        {'ok', Contents} ->
+            lager:debug("successfully converted to ~s", [ToExt]),
+            {Major, Minor, _} = cow_mimetypes:all(<<"foo.", (ToExt)/binary>>),
+
+            NewFileJObj = wh_json:set_values([{[<<"headers">>, <<"content_type">>], <<Major/binary, "/", Minor/binary>>}
+                                              ,{[<<"headers">>, <<"content_length">>], iolist_size(Contents)}
+                                              ,{<<"contents">>, Contents}
+                                             ], FileJObj),
+
+            validate_upload(
+              cb_context:setters(Context
+                                 ,[{fun cb_context:set_req_files/2, [{<<"original_media">>, FileJObj}
+                                                                     ,{<<"normalized_media">>, NewFileJObj}
+                                                                    ]
+                                   }
+                                   ,{fun cb_context:set_doc/2, wh_json:delete_key(<<"normalization_error">>, cb_context:doc(Context))}
+                                  ]
+                                )
+              ,MediaId
+              ,NewFileJObj
+             );
+        {'error', Reason} ->
+            lager:warning("failed to convert to ~s: ~s", [ToExt, Reason]),
+
+            validate_upload(cb_context:set_doc(Context
+                                               ,wh_json:set_value(<<"normalization_error">>, Reason, cb_context:doc(Context))
+
+                                              )
+                            ,MediaId
+                            ,FileJObj
+                           )
+    end.
+
+-spec validate_upload(cb_context:context(), ne_binary(), wh_json:object()) -> cb_context:context().
+validate_upload(Context, MediaId, FileJObj) ->
+    CT = wh_json:get_value([<<"headers">>, <<"content_type">>], FileJObj, <<"application/octet-stream">>),
+    Size = wh_json:get_integer_value([<<"headers">>, <<"content_length">>]
+                                     ,FileJObj
+                                     ,iolist_size(wh_json:get_value(<<"contents">>, FileJObj, <<>>))
+                                    ),
+
+    Props = [{<<"content_type">>, CT}
+             ,{<<"content_length">>, Size}
+             ,{<<"media_source">>, <<"recording">>}
+            ],
+    validate_request(MediaId
+                     ,cb_context:set_req_data(Context
+                                              ,wh_json:set_values(Props, cb_context:doc(Context))
+                                             )
+                    ).
 
 -spec get(cb_context:context(), path_token(), path_token()) -> cb_context:context().
 get(Context, _MediaId, ?BIN_DATA) ->
@@ -381,7 +452,7 @@ maybe_update_tts(Context, Text, Voice, 'success') ->
         {'ok', ContentType, Content} ->
             MediaId = wh_json:get_value(<<"_id">>, JObj),
             Headers = wh_json:from_list([{<<"content_type">>, ContentType}
-                                         ,{<<"content_length">>, byte_size(Content)}
+                                         ,{<<"content_length">>, iolist_size(Content)}
                                         ]),
             FileJObj = wh_json:from_list([{<<"headers">>, Headers}
                                           ,{<<"contents">>, Content}
@@ -391,8 +462,8 @@ maybe_update_tts(Context, Text, Voice, 'success') ->
                          ,".wav"
                        >>,
             _ = update_media_binary(cb_context:set_resp_status(
-                                       cb_context:set_req_files(Context, [{FileName, FileJObj}])
-                                       ,'error'
+                                      cb_context:set_req_files(Context, [{FileName, FileJObj}])
+                                      ,'error'
                                      )
                                     ,MediaId
                                    ),
@@ -414,7 +485,7 @@ maybe_merge_tts(Context, MediaId, Text, Voice, 'success') ->
         {'error', R} -> crossbar_util:response('error', wh_util:to_binary(R), Context);
         {'ok', ContentType, Content} ->
             Headers = wh_json:from_list([{<<"content_type">>, ContentType}
-                                         ,{<<"content_length">>, byte_size(Content)}
+                                         ,{<<"content_length">>, iolist_size(Content)}
                                         ]),
             FileJObj = wh_json:from_list([{<<"headers">>, Headers}
                                           ,{<<"contents">>, Content}
@@ -425,9 +496,9 @@ maybe_merge_tts(Context, MediaId, Text, Voice, 'success') ->
                        >>,
 
             _ = update_media_binary(cb_context:set_resp_status(
-                                       cb_context:set_req_files(Context
-                                                                ,[{FileName, FileJObj}]
-                                                               )
+                                      cb_context:set_req_files(Context
+                                                               ,[{FileName, FileJObj}]
+                                                              )
                                       ,'error'
                                      )
                                     ,MediaId
@@ -733,7 +804,28 @@ on_successful_validation('undefined', Context) ->
             ],
     cb_context:set_doc(Context, wh_json:set_values(Props, cb_context:doc(Context)));
 on_successful_validation(MediaId, Context) ->
-    crossbar_doc:load_merge(MediaId, Context).
+    Context1 = crossbar_doc:load_merge(MediaId, Context),
+    maybe_validate_prompt(MediaId, Context1, cb_context:resp_status(Context1)).
+
+maybe_validate_prompt(MediaId, Context, 'success') ->
+    case wh_json:get_value(<<"prompt_id">>, cb_context:doc(Context)) of
+        'undefined' -> Context;
+        PromptId ->
+            validate_prompt(MediaId, Context, PromptId)
+    end;
+maybe_validate_prompt(_MediaId, Context, _Status) ->
+    Context.
+
+validate_prompt(MediaId, Context, PromptId) ->
+    Language = wh_util:to_lower_binary(wh_json:get_value(<<"language">>, cb_context:doc(Context))),
+    case wh_media_util:prompt_id(PromptId, Language) of
+        MediaId -> Context;
+        _OtherId ->
+            lager:info("attempt to change prompt id '~s' is not allowed on existing media doc '~s'"
+                       ,[PromptId, MediaId]
+                      ),
+            cb_context:add_validation_error(<<"prompt_id">>, <<"invalid">>, <<"Changing the prompt_id on an existing prompt is not allowed">>, Context)
+    end.
 
 -spec maybe_add_prompt_fields(cb_context:context()) -> wh_proplist().
 maybe_add_prompt_fields(Context) ->
@@ -795,19 +887,31 @@ load_media_binary(Context, MediaId) ->
 %%--------------------------------------------------------------------
 -spec update_media_binary(cb_context:context(), path_token()) ->
                                  cb_context:context().
+-spec update_media_binary(cb_context:context(), path_token(), req_files()) ->
+                                 cb_context:context().
 update_media_binary(Context, MediaId) ->
-    [{Filename, FileObj}] = cb_context:req_files(Context),
+    update_media_binary(crossbar_util:maybe_remove_attachments(Context)
+                        ,MediaId
+                        ,cb_context:req_files(Context)
+                       ).
 
+update_media_binary(Context, _MediaId, []) -> Context;
+update_media_binary(Context, MediaId, [{Filename, FileObj}|Files]) ->
     Contents = wh_json:get_value(<<"contents">>, FileObj),
     CT = wh_json:get_value([<<"headers">>, <<"content_type">>], FileObj),
     lager:debug("file content type: ~s", [CT]),
     Opts = [{'headers', [{'content_type', wh_util:to_list(CT)}]}],
 
-    Context1 = crossbar_util:maybe_remove_attachments(Context),
-
-    crossbar_doc:save_attachment(MediaId, cb_modules_util:attachment_name(Filename, CT)
-                                 ,Contents, Context1, Opts
-                                ).
+    update_media_binary(
+      crossbar_doc:save_attachment(MediaId
+                                   ,cb_modules_util:attachment_name(Filename, CT)
+                                   ,Contents
+                                   ,Context
+                                   ,Opts
+                                  )
+      ,MediaId
+      ,Files
+     ).
 
 %%--------------------------------------------------------------------
 %% @private

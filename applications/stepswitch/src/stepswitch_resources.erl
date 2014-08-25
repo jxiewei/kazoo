@@ -120,16 +120,8 @@ sort_resources(Resources) ->
 -spec endpoints(ne_binary(), wh_json:object()) -> wh_json:objects().
 endpoints(Number, JObj) ->
     case maybe_get_endpoints(Number, JObj) of
-        [] -> sort_endpoints(maybe_correct_shortdial(Number, JObj));
+        [] -> [];
         Endpoints -> sort_endpoints(Endpoints)
-    end.
-
--spec maybe_correct_shortdial(ne_binary(), wh_json:object()) -> wh_json:objects().
-maybe_correct_shortdial(Number, JObj) ->
-    case stepswitch_util:correct_shortdial(Number, JObj) of
-        'undefined' -> [];
-        CorrectedNumber ->
-            maybe_get_endpoints(CorrectedNumber, JObj)
     end.
 
 -spec maybe_get_endpoints(ne_binary(), wh_json:object()) -> wh_json:objects().
@@ -169,10 +161,12 @@ get_global_endpoints(Number, JObj) ->
 
 -spec sort_endpoints(wh_json:objects()) -> wh_json:objects().
 sort_endpoints(Endpoints) ->
-    lists:sort(fun(P1, P2) ->
-                       wh_json:get_value(<<"Weight">>, P1, 1)
-                           =< wh_json:get_value(<<"Weight">>, P2, 1)
-               end, Endpoints).
+    lists:sort(fun endpoint_ordering/2, Endpoints).
+
+-spec endpoint_ordering(wh_json:object(), wh_json:object()) -> boolean().
+endpoint_ordering(P1, P2) ->
+    wh_json:get_value(<<"Weight">>, P1, 1)
+        =< wh_json:get_value(<<"Weight">>, P2, 1).
 
 %%--------------------------------------------------------------------
 %% @public
@@ -396,10 +390,11 @@ gateways_to_endpoints(Number, [Gateway|Gateways], JObj, Endpoints) ->
 -spec gateway_to_endpoint(ne_binary(), gateway(), wh_json:object()) ->
                                 wh_json:object().
 gateway_to_endpoint(Number, Gateway, JObj) ->
-    CCVs = props:filter_undefined(
+    CCVs = props:filter_empty(
              [{<<"Emergency-Resource">>, gateway_emergency_resource(Gateway)}
               ,{<<"Format-From-URI">>, Gateway#gateway.format_from_uri}
               ,{<<"From-URI-Realm">>, Gateway#gateway.from_uri_realm}
+              ,{<<"Original-Number">>, Number}
              ]),
     wh_json:from_list(
       props:filter_empty(
@@ -492,7 +487,7 @@ fetch_global_resources() ->
 -type wh_cache_props() :: [cache_property(),...] | [].
 
 -spec fetch_global_cache_origin(wh_json:objects(), wh_cache_props()) -> wh_cache_props().
-fetch_global_cache_origin([], Props) -> Props;
+fetch_global_cache_origin([], Props) -> [{'type', <<"resource">>} | Props];
 fetch_global_cache_origin([JObj|JObjs], Props) ->
     Id = wh_json:get_value(<<"id">>, JObj),
     fetch_global_cache_origin(JObjs, [{'db', ?RESOURCES_DB, Id}|Props]).
@@ -513,18 +508,18 @@ fetch_local_resources(AccountId) ->
             lager:warning("unable to fetch local resources from ~s: ~p", [AccountId, _R]),
             [];
         {'ok', JObjs} ->
-            CacheProps = [{'origin', fetch_global_cache_origin(JObjs, AccountDb, [])}],
+            CacheProps = [{'origin', fetch_local_cache_origin(JObjs, AccountDb, [])}],
             Resources = resources_from_jobjs([wh_json:get_value(<<"doc">>, JObj) || JObj <- JObjs]),
             LocalResources = [Resource#resrc{global='false'} || Resource <- Resources],
             wh_cache:store_local(?STEPSWITCH_CACHE, {'local_resources', AccountId}, LocalResources, CacheProps),
             LocalResources
     end.
 
--spec fetch_global_cache_origin(wh_json:objects(), ne_binary(), wh_cache_props()) -> wh_cache_props().
-fetch_global_cache_origin([], _, Props) -> Props;
-fetch_global_cache_origin([JObj|JObjs], AccountDb, Props) ->
+-spec fetch_local_cache_origin(wh_json:objects(), ne_binary(), wh_cache_props()) -> wh_cache_props().
+fetch_local_cache_origin([], _, Props) -> [{'type', <<"resource">>} | Props];
+fetch_local_cache_origin([JObj|JObjs], AccountDb, Props) ->
     Id = wh_json:get_value(<<"id">>, JObj),
-    fetch_global_cache_origin(JObjs, AccountDb, [{'db', AccountDb, Id}|Props]).
+    fetch_local_cache_origin(JObjs, AccountDb, [{'db', AccountDb, Id}|Props]).
 
 %%--------------------------------------------------------------------
 %% @private

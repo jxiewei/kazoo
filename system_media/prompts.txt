@@ -87,3 +87,11 @@ dnd-deactivated: Do not disturb is now disabled.  Receiving calls, including
 call forwarding, has resumed.
 dnd-not_available: Do not disturb is not supported from this phone.  Please
 contact your system administrator if you believe this is in error.
+
+intercept-no_channels: No channels
+intercept-no_users: No users found
+eavesdrop-no_channels: No channels
+
+camper-deny: Your request is denied.
+camper-queue: Your request is accepted.
+

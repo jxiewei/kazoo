@@ -90,9 +90,51 @@ create_ccvs(#auth_user{}=AuthUser) ->
              ,{<<"Owner-ID">>, AuthUser#auth_user.owner_id}
              ,{<<"Account-Realm">>, AuthUser#auth_user.account_realm}
              ,{<<"Account-Name">>, AuthUser#auth_user.account_name}
+             ,{<<"Presence-ID">>, maybe_get_presence_id(AuthUser)}
             | create_specific_ccvs(AuthUser, AuthUser#auth_user.method)
             ],
     wh_json:from_list(props:filter_undefined(Props)).
+
+-spec maybe_get_presence_id(auth_user()) -> api_binary().
+maybe_get_presence_id(#auth_user{account_db=AccountDb
+                                 ,authorizing_id=DeviceId
+                                 ,owner_id=OwnerId
+                                 ,username=Username
+                                 ,account_realm=Realm}) ->
+    case get_presence_id(AccountDb, DeviceId, OwnerId) of
+        'undefined' -> <<Username/binary, "@", Realm/binary>>;
+        PresenceId ->
+            case binary:match(PresenceId, <<"@">>) of
+                'nomatch' -> <<PresenceId/binary, "@", Realm/binary>>;
+                _ -> PresenceId
+        end
+    end.
+
+-spec get_presence_id(api_binary(), api_binary(), api_binary()) -> api_binary().
+get_presence_id('undefined', _, _) -> 'undefined';
+get_presence_id(_, 'undefined', 'undefined') -> 'undefined';
+get_presence_id(AccountDb, DeviceId, 'undefined') ->
+    get_device_presence_id(AccountDb, DeviceId);
+get_presence_id(AccountDb, DeviceId, OwnerId) ->
+    maybe_get_owner_presence_id(AccountDb, DeviceId, OwnerId).
+
+-spec maybe_get_owner_presence_id(ne_binary(), ne_binary(), ne_binary()) -> api_binary().
+maybe_get_owner_presence_id(AccountDb, DeviceId, OwnerId) ->
+    case couch_mgr:open_cache_doc(AccountDb, OwnerId) of
+        {'error', _} -> 'undefined';
+        {'ok', JObj} ->
+            case wh_json:get_ne_value(<<"presence_id">>, JObj) of
+                'undefined' -> get_device_presence_id(AccountDb, DeviceId);
+                PresenceId -> PresenceId
+            end
+    end.
+
+-spec get_device_presence_id(ne_binary(), ne_binary()) -> api_binary().
+get_device_presence_id(AccountDb, DeviceId) ->
+    case couch_mgr:open_cache_doc(AccountDb, DeviceId) of
+        {'error', _} -> 'undefined';
+        {'ok', JObj} -> wh_json:get_ne_value(<<"presence_id">>, JObj)
+    end.
 
 -spec create_specific_ccvs(auth_user(), ne_binary()) -> wh_proplist().
 create_specific_ccvs(#auth_user{}=AuthUser, ?GSM_ANY_METHOD) ->
@@ -108,7 +150,7 @@ create_custom_sip_headers(?GSM_ANY_METHOD, #auth_user{a3a8_kc=KC
                                            ,account_realm=AccountRealm
                                            ,realm=Realm
                                            ,username=Username
-                                           }=AuthUser) ->
+                                           }) ->
     Props = props:filter_undefined(
               [{<<"P-GSM-Kc">>, KC}
                ,{<<"P-GSM-SRes">>, SRES}
@@ -123,11 +165,6 @@ create_custom_sip_headers(?GSM_ANY_METHOD, #auth_user{a3a8_kc=KC
     end;
 create_custom_sip_headers(?ANY_AUTH_METHOD, _) -> 'undefined'.
 
-
--spec get_asserted_identity(api_binary(), api_binary()) -> api_binary().
-get_asserted_identity('undefined', _) -> 'undefined';
-get_asserted_identity(Number, Realm) ->
-    <<"<sip:", Number/binary, "@", Realm/binary, ">">>.
 
 -spec get_tel_uri(api_binary()) -> api_binary().
 get_tel_uri('undefined') -> 'undefined';
@@ -357,16 +394,17 @@ maybe_update_gsm(_, AuthUser) -> AuthUser.
 -spec maybe_msisdn(auth_user()) -> auth_user().
 maybe_msisdn(#auth_user{msisdn='undefined'
                         ,owner_id='undefined'
-                        ,authorizing_id=Id}=AuthUser) ->
+                        ,authorizing_id=Id
+                       }=AuthUser) ->
     maybe_msisdn_from_callflows(AuthUser, <<"device">>, Id);
 maybe_msisdn(#auth_user{msisdn='undefined'
-                        ,owner_id=OwnerId}=AuthUser) ->
+                        ,owner_id=OwnerId
+                       }=AuthUser) ->
     maybe_msisdn_from_callflows(AuthUser, <<"user">>, OwnerId);
 maybe_msisdn(AuthUser) -> AuthUser.
 
 -spec maybe_msisdn_from_callflows(auth_user(), ne_binary(), ne_binary()) -> auth_user().
-maybe_msisdn_from_callflows(#auth_user{doc=JObj
-                                       ,account_db=AccountDB}=AuthUser
+maybe_msisdn_from_callflows(#auth_user{account_db=AccountDB}=AuthUser
                             ,Type, Id) ->
     ViewOptions = [{'startkey', [Type, Id]}
                    ,{'endkey', [Type, Id, <<"9999999">>]}
@@ -387,7 +425,8 @@ maybe_msisdn_from_callflows(#auth_user{doc=JObj
 
 -spec gsm_auth(auth_user()) -> {'ok', auth_user()}.
 gsm_auth(#auth_user{method=?GSM_CACHED_METHOD
-                    ,a3a8_sres=SRES}=AuthUser) ->
+                    ,a3a8_sres=SRES
+                   }=AuthUser) ->
     {'ok', AuthUser#auth_user{password=SRES}};
 gsm_auth(#auth_user{method=?GSM_A3A8_METHOD
                     ,a3a8_key=GsmKey
@@ -400,7 +439,8 @@ gsm_auth(#auth_user{method=?GSM_A3A8_METHOD
     <<SRES:8/binary, KC/binary>> = SResHex,
     {'ok', AuthUser#auth_user{a3a8_sres=SRES
                              ,a3a8_kc=KC
-                             ,password=SRES}};
+                             ,password=SRES
+                             }};
 gsm_auth(AuthUser) -> {'ok', AuthUser}.
 
 %%-----------------------------------------------------------------------------
