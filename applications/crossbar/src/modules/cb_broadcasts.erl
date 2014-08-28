@@ -135,7 +135,7 @@ validate(#cb_context{req_verb = ?HTTP_POST}=Context, Id, ?END_PATH_TOKEN) ->
     case broadcast_task:stop(Id) of
         'ok' -> 
             lager:debug("broadcast task(~p) stopped successfully", [Id]),
-            Context;
+            crossbar_util:response(<<"stopped successfully">>, Context);
         _Reason ->
             lager:debug("broadcast task(~p) stopped failed, reason ~p", [Id, _Reason]),
             crossbar_util:response('error', <<"stop failed">>, 500, Context)
