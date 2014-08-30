@@ -458,14 +458,24 @@ get_originate_action(<<"transfer">>, JObj) ->
 get_originate_action(<<"ivrcall">>, JObj) ->
     Data = wh_json:get_value(<<"Application-Data">>, JObj),
     IVR = wh_json:get_value(<<"IVRName">>, Data),
-    list_to_binary(["'m:^:", get_unset_vars(JObj)
-        ,"wait_for_answer^"
-        %,"playback:zh/cn/sue/ivr/ivr-your_validation_code_is.wav^"
-        %,"say:zh NUMBER iterated "
-        ,"phrase:", IVR, ","
-        ,wh_json:get_value(<<"Text">>, Data)
-        ,"' inline"
-        ]);
+    case IVR of 
+        <<"play_validation_code">> ->
+            list_to_binary(["'m:^:", get_unset_vars(JObj)
+                ,"wait_for_answer^"
+                %,"playback:zh/cn/sue/ivr/ivr-your_validation_code_is.wav^"
+                %,"say:zh NUMBER iterated "
+                ,"phrase:", IVR, ","
+                ,wh_json:get_value(<<"Text">>, Data)
+                ,"' inline"
+                ]);
+        <<"play_advertisement">> ->
+            MediaPath = ecallmgr_util:media_path(wh_json:get_value(<<"Text">>, Data), callid(JObj), JObj),
+            list_to_binary(["'m:^:", get_unset_vars(JObj)
+                ,"wait_for_answer^"
+                ,"playback:", MediaPath
+                ,"' inline"
+                ])
+    end;
 
 
 get_originate_action(<<"bridge">>, JObj) ->
@@ -829,3 +839,7 @@ should_update_uuid(OldUUID, Props) ->
              props:get_value(<<"Resigning-UUID">>, Props) =:= OldUUID;
         _ -> 'false'
     end.
+
+callid(JObj) ->
+    wh_json:get_first_defined([<<"Call-ID">>, <<"Msg-ID">>], JObj, ?LOG_SYSTEM_ID).
+

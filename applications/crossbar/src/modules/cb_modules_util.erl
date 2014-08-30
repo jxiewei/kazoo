@@ -219,6 +219,19 @@ originate_quickcall(Endpoints, Call, Context) ->
     wapi_resource:publish_originate_req(props:filter_undefined(Request)),
     crossbar_util:response_202(<<"processing request">>, cb_context:set_resp_data(Context, Request)).
 
+normalize_ivrcall_data(Call, Context) ->
+    Data = cb_context:req_data(Context),
+    normalize_ivrcall_data(wh_json:get_value(<<"IVRName">>, Data), Call, Context).
+
+normalize_ivrcall_data(<<"play_advertisement">>, Call, Context) -> 
+    Data = cb_context:req_data(Context),
+    MediaId = wh_json:get_value(<<"Text">>, Data),
+    wh_json:set_value(<<"Text">>, <<$/, (whapps_call:account_db(Call))/binary, $/, MediaId/binary>>, Data);
+
+normalize_ivrcall_data(_, _Call, Context) ->
+    cb_context:req_data(Context).
+    
+
 originate_ivrcall(Endpoints, Call, Context) ->
     CCVs = [{<<"Account-ID">>, cb_context:account_id(Context)}
             ,{<<"Retain-CID">>, <<"true">>}
@@ -230,7 +243,7 @@ originate_ivrcall(Endpoints, Call, Context) ->
                 'true' -> wh_util:rand_hex_binary(16);
                 'false' -> cb_context:req_id(Context)
             end,
-    Data = cb_context:req_data(Context),
+    Data = normalize_ivrcall_data(Call, Context),
     Request = [{<<"Application-Name">>, <<"ivrcall">>}
                ,{<<"Application-Data">>, Data}
                ,{<<"Originate-Immediate">>, true}
