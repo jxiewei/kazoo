@@ -111,17 +111,20 @@ handle_cast('init', State) ->
     put('callid', TaskId),
     lager:debug("Initializing broadcast task ~p", [TaskId]),
 
-    Moderators = wh_json:get_value(<<"presenters">>, Task),
-    Members = wh_json:get_value(<<"listeners">>, Task),
+    Moderators = wh_json:get_ne_value(<<"presenters">>, Task, []),
+    Members = wh_json:get_ne_value(<<"listeners">>, Task, []),
     lager:debug("presenters ~p, listeners ~p", [Moderators, Members]),
 
-    gen_listener:cast(self(), {'start_participant', 'true', Moderators}),
-    gen_listener:cast(self(), {'start_participant', 'false', Members}),
+    Parties = [{'true', Number}||Number <- Moderators] ++ 
+            [{'false', Number}||Number <- Members],
+
+    %%Reverse it to make sure moderator is joined to conference at last.
+    gen_listener:cast(self(), {'start_participant', lists:reverse(Parties)}),
 
     {'noreply', State};
 
-handle_cast({'start_participant', _Moderator, []}, State) -> {'noreply', State};
-handle_cast({'start_participant', Moderator, [Number|Others]}, #state{account_id=AccountId
+handle_cast({'start_participant', []}, State) -> {'noreply', State};
+handle_cast({'start_participant', [{Moderator, Number}|Others]}, #state{account_id=AccountId
                                             ,account=Account
                                             ,userid=UserId
                                             ,user=User
@@ -133,7 +136,6 @@ handle_cast({'start_participant', Moderator, [Number|Others]}, #state{account_id
     lager:debug("Starting broadcast participant ~p of task ~p", [Number, TaskId]),
     AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
     CallerId = wh_json:get_value([<<"caller_id">>, <<"external">>], User),
-    FromUser = wh_json:get_value(<<"number">>, CallerId),
     Realm = wh_json:get_ne_value(<<"realm">>, Account),
 
     Call = whapps_call:exec([
@@ -156,7 +158,7 @@ handle_cast({'start_participant', Moderator, [Number|Others]}, #state{account_id
         <<"conference">> ->
             {'ok', Pid} = broadcast_participant:start(Call, {'conference', Moderator, TaskId})
     end,
-    timer:apply_after(wh_util:to_integer(1000/?ORIGINATE_RATE), gen_listener, cast, [self(), {'start_participant', Moderator, Others}]),
+    timer:apply_after(wh_util:to_integer(1000/?ORIGINATE_RATE), gen_listener, cast, [self(), {'start_participant', Others}]),
     {'noreply', State#state{participants=dict:store(Number, #participant{pid=Pid, partylog=#partylog{}}, Parties)}};
 
 handle_cast({'participant_exited', PartyLog}, State) ->
