@@ -580,7 +580,7 @@ terminator_v(T) -> lists:member(T, ?ANY_DIGIT).
                                 ]).
 -define(OPTIONAL_CONFERENCE_REQ_HEADERS, [<<"Insert-At">>
                                           ,<<"Mute">>, <<"Deaf">>, <<"Moderator">>
-                                          ,<<"Reinvite">>, <<"Profile">>
+                                          ,<<"EndConf">>, <<"Reinvite">>, <<"Profile">>
 
                                           %% sets joining member to nospeak relations
                                           ,<<"Member-Nospeak">>
@@ -596,6 +596,7 @@ terminator_v(T) -> lists:member(T, ?ANY_DIGIT).
                                ,{<<"Conference-ID">>, fun is_binary/1}
                                ,{<<"Mute">>, fun wh_util:is_boolean/1}
                                ,{<<"Deaf">>, fun wh_util:is_boolean/1}
+                               ,{<<"EndConf">>, fun wh_util:is_boolean/1}
                                ,{<<"Moderator">>, fun wh_util:is_boolean/1}
                                ,{<<"Reinvite">>, fun wh_util:is_boolean/1}
                               ]).

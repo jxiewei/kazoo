@@ -56,14 +56,19 @@ status(Pid) ->
 
 join_conference(Call, ConferenceId, Moderator) ->
     case Moderator of
-        'true' -> Mute = 'false';
-        _ -> Mute = 'true'
+        'true' -> 
+            Mute = 'false',
+            EndConf = 'true';
+        _ -> 
+            Mute = 'true',
+            EndConf = 'false'
     end,
     Command = [{<<"Application-Name">>, <<"conference">>}
             ,{<<"Conference-ID">>, ConferenceId}
             ,{<<"Mute">>, Mute}
             ,{<<"Deaf">>, 'false'}
             ,{<<"Moderator">>, Moderator}
+            ,{<<"EndConf">>, EndConf}
             ,{<<"Profile">>, <<"default">>}
             ],
     whapps_call_command:send_command(Command, Call). 
