@@ -59,6 +59,16 @@
          },
          "default":[
          ]
+      },
+      "cid_name":{
+         "type":"string",
+         "minLength":1,
+         "maxLength":15,
+      },
+      "cid_number":{
+         "type":"string",
+         "minLength":1,
+         "maxLength":15,
       }
    },
 

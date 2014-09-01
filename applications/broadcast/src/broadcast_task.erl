@@ -135,7 +135,7 @@ handle_cast({'start_participant', [{Moderator, Number}|Others]}, #state{account_
 
     lager:debug("Starting broadcast participant ~p of task ~p", [Number, TaskId]),
     AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
-    CallerId = wh_json:get_value([<<"caller_id">>, <<"external">>], User),
+    %CallerId = wh_json:get_value([<<"caller_id">>, <<"external">>], User),
     Realm = wh_json:get_ne_value(<<"realm">>, Account),
 
     Call = whapps_call:exec([
@@ -145,8 +145,8 @@ handle_cast({'start_participant', [{Moderator, Number}|Others]}, #state{account_
                ,fun(C) -> whapps_call:set_to(<<Number/binary, <<"@">>/binary, Realm/binary>>, C) end
                ,fun(C) -> whapps_call:set_account_db(AccountDb, C) end
                ,fun(C) -> whapps_call:set_account_id(AccountId, C) end
-               ,fun(C) -> whapps_call:set_caller_id_name(wh_json:get_value(<<"name">>, CallerId), C) end
-               ,fun(C) -> whapps_call:set_caller_id_number(wh_json:get_value(<<"number">>, CallerId), C) end
+               ,fun(C) -> set_cid_name(Account, User, Task, C) end
+               ,fun(C) -> set_cid_number(Account, User, Task, C) end
                ,fun(C) -> whapps_call:set_callee_id_name(Number, C) end
                ,fun(C) -> whapps_call:set_callee_id_number(Number, C) end
                ,fun(C) -> whapps_call:set_owner_id(UserId, C) end]
@@ -350,3 +350,40 @@ init([AccountId, UserId, TaskId]) ->
                     ,logid=wh_util:rand_hex_binary(16)
                     ,start_tstamp=wh_util:current_tstamp()
                    }}.
+
+set_cid_name(Account, User, Task, Call) ->
+    case wh_json:get_value(<<"cid_name">>, Task) of
+        'undefined' -> maybe_set_user_cid_name(Account, User, Task, Call);
+        CIDName -> whapps_call:set_caller_id_name(CIDName, Call)
+    end.
+
+maybe_set_user_cid_name(Account, User, Task, Call) ->
+    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"name">>], User) of
+        'undefined' -> maybe_set_account_cid_name(Account, User, Task, Call);
+        CIDName -> whapps_call:set_caller_id_name(CIDName, Call)
+    end.
+
+maybe_set_account_cid_name(Account, _User, _Task, Call) ->
+    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"name">>], Account) of
+        'undefined' -> Call;
+        CIDName -> whapps_call:set_caller_id_name(CIDName, Call)
+    end.
+
+
+set_cid_number(Account, User, Task, Call) ->
+    case wh_json:get_value(<<"cid_number">>, Task) of
+        'undefined' -> maybe_set_user_cid_number(Account, User, Task, Call);
+        CIDNumber -> whapps_call:set_caller_id_number(CIDNumber, Call)
+    end.
+
+maybe_set_user_cid_number(Account, User, Task, Call) ->
+    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"number">>], User) of
+        'undefined' -> maybe_set_account_cid_number(Account, User, Task, Call);
+        CIDNumber -> whapps_call:set_caller_id_number(CIDNumber, Call)
+    end.
+
+maybe_set_account_cid_number(Account, _User, _Task, Call) ->
+    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"number">>], Account) of
+        'undefined' -> Call;
+        CIDNumber -> whapps_call:set_caller_id_number(CIDNumber, Call)
+    end.
