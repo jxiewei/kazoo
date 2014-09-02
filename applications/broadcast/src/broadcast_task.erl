@@ -36,12 +36,15 @@
                 ,account :: wh_json:new() %Doc of request account
                 ,user :: wh_json:new() %Doc of request user
                 ,task :: wh_json:new()
+                ,tasktype :: atom()
                 ,participants :: dict:new()
                 ,tref :: timer:tref() %check_exit_condition timer
                 ,self :: pid()
                 ,logid
                 ,start_tstamp
                 ,end_tstamp
+                ,recordingpid
+                ,recordid
                }).
 
 -record(participant, {pid, partylog}).
@@ -102,14 +105,57 @@ handle_info('check_exit_condition', State) ->
             {'stop', 'shutdown', State}
     end;
 
+handle_info({'EXIT', Pid, Reason}, #state{recordingpid=Pid} = State) ->
+    lager:debug("recoridng process ~p exited: ~p", [Pid, Reason]),
+    {'noreply', State};
+
 handle_info(_Msg, State) ->
     lager:info("unhandled message: ~p", [_Msg]),
     {'noreply', State}.
 
 handle_cast('init', State) ->
-    #state{taskid=TaskId, task=Task} = State,
+    #state{tasktype=TaskType, taskid=TaskId} = State,
     put('callid', TaskId),
     lager:debug("Initializing broadcast task ~p", [TaskId]),
+    case TaskType of
+        'file' -> gen_listener:cast(self(), 'start_broadcast');
+        'conference' -> gen_listener:cast(self(), 'start_broadcast');
+        'recording' -> gen_listener:cast(self(), 'start_recording')
+    end,
+    {'noreply', State};
+
+handle_cast('start_recording', State) ->
+    #state{account=Account, user=User, task=Task} = State,
+    [Number|_] = wh_json:get_ne_value(<<"presenters">>, Task, []),
+    Call = broadcast_util:create_call(Account, User, Task, Number),
+    {'ok', RecordingPid} = broadcast_recording:start(Call),
+    link(RecordingPid),
+    {'noreply', State#state{recordingpid=RecordingPid}};
+
+handle_cast({'recording_complete', Id}, State) ->
+    case Id of
+        'undefined' -> 
+            {'stop', 'shutdown', State};
+        _ ->
+            gen_listener:cast(self(), 'start_broadcast'),
+            {'noreply', State#state{recordid=Id}}
+    end;
+
+handle_cast('start_broadcast', #state{tasktype='recording'} = State) ->
+    #state{taskid=TaskId, task=Task} = State,
+    lager:debug("Starting broadcast ~p", [TaskId]),
+
+    Members = wh_json:get_ne_value(<<"listeners">>, Task, []),
+    lager:debug("listeners ~p", [Members]),
+
+    Parties = [{'false', Number}||Number <- Members],
+    gen_listener:cast(self(), {'start_participant', Parties}),
+
+    {'ok', TRef} = timer:send_interval(timer:seconds(?EXIT_COND_CHECK_INTERVAL), 'check_exit_condition'),
+    {'noreply', State#state{tref=TRef}};
+
+handle_cast('start_broadcast', State) ->
+    #state{task=Task} = State,
 
     Moderators = wh_json:get_ne_value(<<"presenters">>, Task, []),
     Members = wh_json:get_ne_value(<<"listeners">>, Task, []),
@@ -121,42 +167,31 @@ handle_cast('init', State) ->
     %%Reverse it to make sure moderator is joined to conference at last.
     gen_listener:cast(self(), {'start_participant', lists:reverse(Parties)}),
 
-    {'noreply', State};
+    {'ok', TRef} = timer:send_interval(timer:seconds(?EXIT_COND_CHECK_INTERVAL), 'check_exit_condition'),
+    {'noreply', State#state{tref=TRef}};
+
 
 handle_cast({'start_participant', []}, State) -> {'noreply', State};
-handle_cast({'start_participant', [{Moderator, Number}|Others]}, #state{account_id=AccountId
-                                            ,account=Account
-                                            ,userid=UserId
-                                            ,user=User
-                                            ,participants=Parties
-                                            ,task=Task
-                                            ,taskid=TaskId
-                                            }=State) ->
+handle_cast({'start_participant', [{Moderator, Number}|Others]}, 
+                                    #state{account=Account
+                                           ,user=User
+                                           ,task=Task
+                                           ,taskid=TaskId
+                                           ,tasktype=TaskType
+                                           ,participants=Parties
+                                           ,recordid=RecordId
+                                          }=State) ->
 
     lager:debug("Starting broadcast participant ~p of task ~p", [Number, TaskId]),
-    AccountDb = wh_util:format_account_id(AccountId, 'encoded'),
-    %CallerId = wh_json:get_value([<<"caller_id">>, <<"external">>], User),
-    Realm = wh_json:get_ne_value(<<"realm">>, Account),
+    Call = broadcast_util:create_call(Account, User, Task, Number),
 
-    Call = whapps_call:exec([
-               fun(C) -> whapps_call:set_authorizing_type(<<"user">>, C) end
-               ,fun(C) -> whapps_call:set_authorizing_id(UserId, C) end
-               ,fun(C) -> whapps_call:set_request(<<Number/binary, <<"@">>/binary, Realm/binary>>, C) end
-               ,fun(C) -> whapps_call:set_to(<<Number/binary, <<"@">>/binary, Realm/binary>>, C) end
-               ,fun(C) -> whapps_call:set_account_db(AccountDb, C) end
-               ,fun(C) -> whapps_call:set_account_id(AccountId, C) end
-               ,fun(C) -> set_cid_name(Account, User, Task, C) end
-               ,fun(C) -> set_cid_number(Account, User, Task, C) end
-               ,fun(C) -> whapps_call:set_callee_id_name(Number, C) end
-               ,fun(C) -> whapps_call:set_callee_id_number(Number, C) end
-               ,fun(C) -> whapps_call:set_owner_id(UserId, C) end]
-               ,whapps_call:new()),
-
-    case wh_json:get_value(<<"type">>, Task) of 
-        <<"file">> ->
-            {'ok', Pid} = broadcast_participant:start(Call, {'file', Moderator, wh_json:get_value(<<"media_id">>, Task)});
-        <<"conference">> ->
-            {'ok', Pid} = broadcast_participant:start(Call, {'conference', Moderator, TaskId})
+    case TaskType of
+        'file' ->
+            {'ok', Pid} = broadcast_participant:start(Call, {TaskType, Moderator, wh_json:get_value(<<"media_id">>, Task)});
+        'recording' ->
+            {'ok', Pid} = broadcast_participant:start(Call, {TaskType, Moderator, RecordId});
+        'conference' ->
+            {'ok', Pid} = broadcast_participant:start(Call, {TaskType, Moderator, TaskId})
     end,
     timer:apply_after(wh_util:to_integer(1000/?ORIGINATE_RATE), gen_listener, cast, [self(), {'start_participant', Others}]),
     {'noreply', State#state{participants=dict:store(Number, #participant{pid=Pid, partylog=#partylog{}}, Parties)}};
@@ -336,7 +371,7 @@ init([AccountId, UserId, TaskId]) ->
     {'ok', AccountDoc} = couch_mgr:open_cache_doc(?WH_ACCOUNTS_DB, AccountId),
     {'ok', UserDoc} = couch_mgr:open_cache_doc(AccountDb, UserId),
     {'ok', TaskDoc} = couch_mgr:open_cache_doc(AccountDb, TaskId),
-    {'ok', TRef} = timer:send_interval(timer:seconds(?EXIT_COND_CHECK_INTERVAL), 'check_exit_condition'),
+    Type = wh_util:to_atom(wh_json:get_value(<<"type">>, TaskDoc)),
 
     {'ok', #state{account_id=AccountId
                     ,userid=UserId
@@ -344,46 +379,10 @@ init([AccountId, UserId, TaskId]) ->
                     ,account=AccountDoc
                     ,user=UserDoc
                     ,task=TaskDoc
+                    ,tasktype=Type
                     ,participants=dict:new()
-                    ,tref=TRef
                     ,self=self()
                     ,logid=wh_util:rand_hex_binary(16)
                     ,start_tstamp=wh_util:current_tstamp()
                    }}.
 
-set_cid_name(Account, User, Task, Call) ->
-    case wh_json:get_value(<<"cid_name">>, Task) of
-        'undefined' -> maybe_set_user_cid_name(Account, User, Task, Call);
-        CIDName -> whapps_call:set_caller_id_name(CIDName, Call)
-    end.
-
-maybe_set_user_cid_name(Account, User, Task, Call) ->
-    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"name">>], User) of
-        'undefined' -> maybe_set_account_cid_name(Account, User, Task, Call);
-        CIDName -> whapps_call:set_caller_id_name(CIDName, Call)
-    end.
-
-maybe_set_account_cid_name(Account, _User, _Task, Call) ->
-    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"name">>], Account) of
-        'undefined' -> Call;
-        CIDName -> whapps_call:set_caller_id_name(CIDName, Call)
-    end.
-
-
-set_cid_number(Account, User, Task, Call) ->
-    case wh_json:get_value(<<"cid_number">>, Task) of
-        'undefined' -> maybe_set_user_cid_number(Account, User, Task, Call);
-        CIDNumber -> whapps_call:set_caller_id_number(CIDNumber, Call)
-    end.
-
-maybe_set_user_cid_number(Account, User, Task, Call) ->
-    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"number">>], User) of
-        'undefined' -> maybe_set_account_cid_number(Account, User, Task, Call);
-        CIDNumber -> whapps_call:set_caller_id_number(CIDNumber, Call)
-    end.
-
-maybe_set_account_cid_number(Account, _User, _Task, Call) ->
-    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"number">>], Account) of
-        'undefined' -> Call;
-        CIDNumber -> whapps_call:set_caller_id_number(CIDNumber, Call)
-    end.

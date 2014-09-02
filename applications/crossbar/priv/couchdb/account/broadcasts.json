@@ -7,7 +7,11 @@
         },
         "listing_by_name": {
             "map": "function(doc) { if (doc.pvt_type != 'broadcast' || doc.pvt_deleted) return; emit(doc.name, null);}"
+        },        
+        "recording_listing": {
+            "map":"function(doc) { if (doc.pvt_type != 'broadcast_recording' || doc.pvt_deleted) return; emit(doc._id, {'id': doc._id, 'name': doc.name, 'call_id': doc.call_id, 'from': doc.from, 'to': doc.to}); }"
         }
+
     }
     ,"filters": {
         "export":"function(doc, req) { return ( doc.pvt_type == 'broadcast' ); }"

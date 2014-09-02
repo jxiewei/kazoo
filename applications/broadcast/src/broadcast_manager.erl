@@ -224,7 +224,7 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 
 handle_info({'EXIT', Pid, Reason}, State) ->
-    lager:debug("Broadcast participant pid ~p exited: ~p", [Pid, Reason]),
+    lager:debug("Broadcast task pid ~p exited: ~p", [Pid, Reason]),
     #state{tasks=Tasks} = State,
     Tasks1 = dict:filter(fun(_, V) -> V =/= Pid end, Tasks),
     {'noreply', State#state{tasks=Tasks1}};
@@ -241,7 +241,7 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 
 handle_event(JObj, _State) ->
-    lager:debug("jerry -- unhandled event ~p", [JObj]),
+    lager:debug("unhandled event ~p", [JObj]),
     {'reply', []}.
 
 %%--------------------------------------------------------------------
