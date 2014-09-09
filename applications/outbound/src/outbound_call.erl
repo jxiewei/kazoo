@@ -6,13 +6,12 @@
 -include("outbound.hrl").
 
 %%API
--export([start_link/3
-        ,start_outbound_call/1
-        ,start_outbound_call/2
-        ,set_caller/1
+-export([start_link/4
+        ,start/1, start/2
+        ,stop/1, status/1
+        ,set_listener/2
         ,wait_answer/0, wait_answer/1
         ]).
-
 %%gen_server callbacks
 -export([init/1
         ,handle_event/2
@@ -31,18 +30,25 @@
 -define(QUEUE_OPTIONS, []).
 -define(CONSUME_OPTIONS, []).
 
--record(state, {outboundid, mycall, myendpoint, callerpid, myq, server}).
+-record(state, {outboundid :: ne_binary()
+               ,mycall :: whapps_call:call()
+               ,myendpoint
+               ,from
+               ,myq
+               ,exiting
+               ,status :: atom()
+               ,server}).
 
 %% API
 
-start_link(Endpoint, Call, CallerPid) ->
+start_link(Id, Endpoint, Call, From) ->
     Bindings = [{'self', []}],
     gen_listener:start_link(?MODULE, [{'responders', ?RESPONDERS}
                                       ,{'bindings', Bindings}
                                       ,{'queue_name', ?QUEUE_NAME}
                                       ,{'queue_options', ?QUEUE_OPTIONS}
                                       ,{'consume_options', ?CONSUME_OPTIONS}
-                                     ], [Endpoint, Call, CallerPid]).
+                                     ], [Id, Endpoint, Call, From]).
 
 wait_originate(Timeout) ->
     Start = os:timestamp(),
@@ -56,6 +62,11 @@ wait_originate(Timeout) ->
         Timeout -> {'error', 'timeout'}
     end.
 
+%% TODO: Create a waiting list, add caller to the list when this api invoked.
+%% Notify all waiter when channel event occured.
+%% TODO: maybe it's better to create a generic waiting mechanism in whapps_call_command?
+%% basic idea is to create a process to monitor amqp message for a specified call, 
+%% block caller and return when specified event occurs.
 wait_answer() ->
     wait_answer(?DEFAULT_ANSWER_TIMEOUT).
 wait_answer(Timeout) ->
@@ -70,22 +81,36 @@ wait_answer(Timeout) ->
         Timeout -> {'error', 'timeout'}
     end.
             
-start_outbound_call(Call) ->
-    {'ok', Pid} = outbound_call_sup:start_outbound_call('undefined', Call, self()),
+start(Call) ->
+    {'ok', Id} = outbound_call_manager:start('undefined', Call),
     case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
-        {'ok', Ret} -> {'ok', Pid, Ret};
+        {'ok', Ret} -> {'ok', Id, Ret};
         _Return -> _Return
     end.
 
-start_outbound_call(Endpoint, Call) ->
-    {'ok', Pid} = outbound_call_sup:start_outbound_call(Endpoint, Call, self()),
+start(Endpoint, Call) ->
+    {'ok', Id} = outbound_call_manager:start(Endpoint, Call),
     case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
-        {'ok', Ret} -> {'ok', Pid, Ret};
+        {'ok', ObCall} -> {'ok', Id, ObCall};
         _Return -> _Return
     end.
 
-set_caller(Server) ->
-    gen_listener:call(Server, 'set_caller').
+stop(Id) ->
+    outbound_call_manager:stop(Id).
+
+status(Id) ->
+    case outbound_call_manager:get_server(Id) of
+        {'ok', Pid} ->
+            gen_listener:call(Pid, 'satus');
+        _Return -> _Return
+    end.
+
+set_listener(Id, ListenerPid) ->
+    case outbound_call_manager:get_server(Id) of
+        {'ok', Pid} ->
+            gen_listener:call(Pid, {'set_listener', ListenerPid});
+        _Return -> _Return
+    end.
 
 channel_answered(UUID) ->
     case whapps_util:amqp_pool_collect([{<<"Fields">>, [<<"Answered">>]}
@@ -127,8 +152,9 @@ handle_info(_Msg, State) ->
     {'noreply', State}.
 
 handle_cast('originate_outbound_call', State) ->
-    lager:debug("jerry -- originating outbound call"),
     #state{outboundid=OutboundId, mycall=Call, myq=Q} = State,
+    put('callid', OutboundId),
+    lager:debug("jerry -- originating outbound call"),
     AccountId = whapps_call:account_id(Call),
 
     CCVs = [{<<"Account-ID">>, AccountId}
@@ -139,7 +165,7 @@ handle_cast('originate_outbound_call', State) ->
             ,{<<"OutBound-ID">>, OutboundId}
            ],
 
-    Number = whapps_call:request_user(Call),
+    [Number, _] = binary:split(whapps_call:to(Call), <<"@">>),
     Endpoint = 
     case State#state.myendpoint of
         'undefined' -> wh_json:from_list([{<<"Invite-Format">>, <<"route">>}
@@ -150,6 +176,7 @@ handle_cast('originate_outbound_call', State) ->
         E -> E
     end,
 
+    %FIXME: codec renegotiation issues.
     [RequestUser, _] = binary:split(whapps_call:request(Call), <<"@">>),
     Request = props:filter_undefined(
                  [{<<"Application-Name">>, <<"park">>}
@@ -173,7 +200,7 @@ handle_cast('originate_outbound_call', State) ->
                 ]),
 
     wapi_resource:publish_originate_req(Request),
-    {'noreply', State};
+    {'noreply', State#state{status='initial'}};
 
 handle_cast({'update_callid', CallId}, State) ->
     CtrlQ = channel_control_queue(CallId),
@@ -182,21 +209,26 @@ handle_cast({'update_callid', CallId}, State) ->
                         fun(C) -> whapps_call:set_call_id(CallId, C) end
                         ,fun(C) -> whapps_call:set_control_queue(CtrlQ, C) end]
                         ,State#state.mycall),
+    case State#state.exiting of
+        'true' -> gen_listener:cast(self(), 'stop');
+        _-> 'ok'
+    end,
     case channel_answered(CallId) of 
-        {'ok', 'true'} -> 
+        {'ok', 'true'} ->
             %originate succeed and channel has answered.
-            State#state.callerpid ! {'outbound_call_originated', Call},
-            State#state.callerpid ! {'outbound_call_answered', Call};
+            State#state.from ! {'outbound_call_originated', Call},
+            State#state.from ! {'outbound_call_answered', Call},
+            {'noreply', State#state{mycall=Call, status='answered'}};
         {'ok', 'false'} -> 
             %originate succeed and channel has not answered.
             Props = [{'callid', CallId},{'restrict_to', [<<"CHANNEL_ANSWER">>, <<"CHANNEL_DESTROY">>]}], 
             gen_listener:add_binding(self(), 'call', Props),
-            State#state.callerpid ! {'outbound_call_originated', Call};
-        'error' ->
-            State#state.callerpid ! {'outbound_call_originate_failed', 'channel_not_exist'}
-    end,
-    {'noreply', State#state{mycall=Call}};
-
+            State#state.from ! {'outbound_call_originated', Call},
+            {'noreply', State#state{mycall=Call, status='proceeding'}};
+        _ ->
+            State#state.from ! {'outbound_call_originate_failed', 'channel_not_exist'},
+            {'stop', {'shutdown', 'outbound_call_originate_failed'}, State}
+    end;
 
 handle_cast({'originate_success', JObj}, State=#state{myendpoint=Endpoint}) when Endpoint =/= 'undefined' ->
     CallId = wh_json:get_value(<<"Call-ID">>, JObj),
@@ -205,7 +237,7 @@ handle_cast({'originate_success', JObj}, State=#state{myendpoint=Endpoint}) when
     
 %originate command failed
 handle_cast({'originate_fail', _JObj}, State) ->
-    State#state.callerpid ! {'outbound_call_originate_failed', 'originate_fail'},
+    State#state.from ! {'outbound_call_originate_failed', 'originate_fail'},
     {'stop', {'shutdown', 'successful'}, State};
 
 handle_cast({'channel_bridged', JObj}, State) ->
@@ -214,12 +246,15 @@ handle_cast({'channel_bridged', JObj}, State) ->
     {'noreply', State};
 
 handle_cast({'channel_answered', _JObj}, State) ->
-    State#state.callerpid ! {'outbound_call_answered', State#state.mycall},
-    {'stop', {'shutdown', 'successful'}, State};
+    State#state.from ! {'outbound_call_answered', State#state.mycall},
+    {'noreply', State#state{status='answered'}};
 
 %callid has updated, but channel is destroyed after.
 handle_cast({'channel_destroy', _JObj}, State) ->
-    State#state.callerpid ! {'outbound_call_rejected', 'channel_destroyed'},
+    case State#state.status of
+        'proceeding' -> State#state.from ! {'outbound_call_rejected', 'channel_destroyed'};
+        _Else -> 'ok'
+    end,
     {'stop', {'shutdown', 'successful'}, State};
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
@@ -229,12 +264,29 @@ handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
     gen_listener:cast(self(), 'originate_outbound_call'),
     {'noreply', State#state{myq=_QueueName}};
 
+
+%% Do not exit immediately to leave time to sending hangup command, 
+%% to avoid ghost call.
+handle_cast('stop', #state{mycall=Call}=State) ->
+    case whapps_call:control_queue(Call) of
+        'undefined' -> 
+            {'noreply', State#state{exiting='true'}};
+        _ ->
+            whapps_call_command:hangup(Call),
+            {'stop', {'shutdown', 'successful'}, State}
+    end;
+
 handle_cast(_Cast, State) ->
     lager:debug("unhandled cast: ~p", [_Cast]),
     {'noreply', State}.
 
-handle_call('set_caller', {Pid, _}, State) ->
-    {'reply', 'ok', State#state{callerpid=Pid}};
+handle_call({'set_listener', Pid}, _From, State) ->
+    {'reply', 'ok', State#state{from=Pid}};
+
+handle_call('status', _From, State) ->
+    #state{status=Status} = State,
+    {'reply', {'ok', Status}, State};
+
 handle_call(_Request, _, P) ->
     {'reply', {'error', 'unimplemented'}, P}.
 
@@ -266,9 +318,12 @@ terminate(_Reason, _ObConf) ->
 code_change(_OldVsn, ObConf, _Extra) ->
     {'ok', ObConf}.
 
-init([Endpoint, Call, CallerPid]) ->
+init([Id, Endpoint, Call, From]) ->
     process_flag('trap_exit', 'true'),
-    OutboundId = wh_util:rand_hex_binary(16),
-    Server = outbound_call_manager:pid(),
-    gen_listener:cast(Server, {'outbound_call_started', OutboundId, Call}),
-    {'ok', #state{outboundid=OutboundId, mycall=Call, myendpoint=Endpoint, callerpid=CallerPid, server=self()}}.
+    {'ok', #state{outboundid=Id
+                 ,mycall=Call
+                 ,myendpoint=Endpoint
+                 ,from=From
+                 ,status='initial'
+                 ,exiting='false'
+                 ,server=self()}}.

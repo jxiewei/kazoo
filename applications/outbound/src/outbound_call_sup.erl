@@ -14,7 +14,7 @@
 
 %% API
 -export([start_link/0]).
--export([start_outbound_call/3]).
+-export([start/4]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -35,14 +35,8 @@
 -spec start_link() -> startlink_ret().
 start_link() -> supervisor:start_link({'local', ?SERVER}, ?MODULE, []).
 
-start_outbound_call(Endpoint, Call, CallerPid) -> 
-    case supervisor:start_child(?MODULE, [Endpoint, Call, CallerPid]) of
-    {'ok', Pid} -> {'ok', Pid};
-    _R -> 
-        lager:debug("jerry -- start outbond_call failed, ~p", [_R]),
-        'error'
-    end.
-
+start(Id, Endpoint, Call, From) -> 
+    supervisor:start_child(?MODULE, [Id, Endpoint, Call, From]).
 
 %%%===================================================================
 %%% Supervisor callbacks

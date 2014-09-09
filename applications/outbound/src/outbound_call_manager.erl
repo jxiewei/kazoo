@@ -9,9 +9,10 @@
 
 -behaviour(gen_listener).
 
--export([start_link/0]).
+-export([start_link/0
+        ,start/2, stop/1
+        ,get_server/1]).
 -export([init/1
-         ,pid/0
          ,handle_call/3
          ,handle_cast/2
          ,handle_info/2
@@ -22,7 +23,7 @@
 
 -include("outbound.hrl").
 
--record(state, {callmap}).
+-record(state, {calls}).
 
 -define(BINDINGS, [{'self', []}
                   ]).
@@ -49,10 +50,19 @@ start_link() ->
                                       ,{'queue_options', ?QUEUE_OPTIONS}
                                       ,{'consume_options', ?CONSUME_OPTIONS}
                                      ], []).
-pid() ->
-    [Pid] = gproc:lookup_pids({'p', 'l', 'outbound_call_manager'}),
-    Pid.
 
+start(Endpoint, Call) ->
+    [Pid] = gproc:lookup_pids({'p', 'l', 'outbound_call_manager'}),
+    gen_listener:call(Pid, {'start', Endpoint, Call}).
+
+stop(Id) ->
+    [Pid] = gproc:lookup_pids({'p', 'l', 'outbound_call_manager'}),
+    gen_listener:call(Pid, {'stop', Id}).
+
+get_server(Id) ->
+    [Pid] = gproc:lookup_pids({'p', 'l', 'outbound_call_manager'}),
+    gen_listener:call(Pid, {'get_server', Id}).
+    
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -73,7 +83,7 @@ init([]) ->
     gproc:reg({'p', 'l', 'outbound_call_manager'}),
     Props = [{'restrict_to', [<<"CHANNEL_BRIDGE">>]}],
     gen_listener:add_binding(self(), 'call', Props),
-    {'ok', #state{callmap=dict:new()}}.
+    {'ok', #state{calls=dict:new()}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -89,6 +99,32 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+
+handle_call({'start', Endpoint, Call}, {FromPid, _}, State) ->
+    #state{calls=Calls} = State,
+    Id = wh_util:rand_hex_binary(16),
+    {'ok', Pid} = outbound_call_sup:start(Id, Endpoint, Call, FromPid),
+    {'reply', {'ok', Id}, State#state{calls=dict:store(Id, Pid, Calls)}};
+
+handle_call({'stop', Id}, _, State) ->
+    #state{calls=Calls} = State,
+    case dict:find(Id, Calls) of
+        {'ok', Pid} -> 
+            gen_listener:cast(Pid, 'stop'),
+            {'reply', 'ok', State#state{calls=dict:erase(Id, Calls)}};
+        _ ->
+            {'reply', {'error', 'not_found'}, State}
+    end;
+
+handle_call({'get_server', Id}, _From, State) ->
+    #state{calls=Calls} = State,
+    case dict:find(Id, Calls) of
+        {'ok', Pid} ->
+            {'reply', {'ok', Pid}, State};
+        _ ->
+            {'reply', {'error', 'not_found'}, State} 
+    end;
+
 handle_call(_Request, _From, State) ->
     {'reply', {'error', 'not_implemented'}, State}.
 
@@ -107,10 +143,6 @@ handle_cast({'gen_listener', {'created_queue', _QueueNAme}}, State) ->
 
 handle_cast({'gen_listener', {'is_consuming', _IsConsuming}}, State) ->
     {'noreply', State};
-
-handle_cast({'outbound_call_started', OutboundId, Pid}, State) ->
-    Dict = dict:store(OutboundId, Pid, State#state.callmap), 
-    {'noreply', State#state{callmap=Dict}};
 
 handle_cast(_Msg, State) ->
     {'noreply', State}.
@@ -140,8 +172,8 @@ handle_info(_Info, State) ->
 handle_event(JObj, State) ->
     case whapps_util:get_event_type(JObj) of
         {<<"call_event">>, <<"CHANNEL_BRIDGE">>} ->
-            OutboundId = wh_json:get_value([<<"Custom-Channel-Vars">>, <<"OutBound-ID">>], JObj),
-            {'ok', Pid} = dict:find(OutboundId, State#state.callmap),
+            Id = wh_json:get_value([<<"Custom-Channel-Vars">>, <<"OutBound-ID">>], JObj),
+            {'ok', Pid} = dict:find(Id, State#state.calls),
             gen_listener:cast(Pid, {'channel_bridged', JObj});
         {_Else, _Info} ->
             lager:debug("received channel event ~p", [JObj])

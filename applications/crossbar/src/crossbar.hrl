@@ -49,6 +49,9 @@
 -define(DEVICES_QCALL_NOUNS, [{<<"devices">>, [_DeviceId, <<"quickcall">>, _Number]}
                               ,{?WH_ACCOUNTS_DB, [_]}
                              ]).
+-define(DEVICES_CALLBACK_NOUNS, [{<<"devices">>, [_DeviceId, <<"callback">>, _Number]}
+                                 ,{?WH_ACCOUNTS_DB, [_]}
+                                ]).
 -define(CONFERENCE_KICKOFF_NOUNS, [{<<"conferences">>, [_ConferenceId, <<"kickoff">>]}
                                    ,{?WH_ACCOUNTS_DB, [_]}
                                   ]).
