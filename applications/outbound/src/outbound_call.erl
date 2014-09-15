@@ -11,6 +11,7 @@
         ,stop/1, status/1
         ,test/3
         ,wait_answer/1, wait_answer/2
+        ,set_listener/2
         ]).
 %%gen_server callbacks
 -export([init/1
@@ -107,10 +108,9 @@ test(AccountId, UserId, Number) ->
 start(Call) ->
     {'ok', Pid} = outbound_call_manager:start('undefined', Call),
     case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
-        {'ok', Ret} -> 
-            {'ok', Pid, Ret};
-        _Return ->
-            lager:info("Outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
+        {'ok', Ret} -> {'ok', Pid, Ret};
+        _Return -> 
+            lager:debug("outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
             stop(Pid),
             _Return
     end.
@@ -118,19 +118,18 @@ start(Call) ->
 start(Endpoint, Call) ->
     {'ok', Pid} = outbound_call_manager:start(Endpoint, Call),
     case wait_originate(?DEFAULT_ORIGINATE_TIMEOUT) of
-        {'ok', ObCall} -> 
-            {'ok', Pid, ObCall};
-        _Return -> 
-            lager:info("Outbound originate timeout in ~p seconds", [?DEFAULT_ORIGINATE_TIMEOUT/1000]),
-            stop(Pid),
-            _Return
+        {'ok', ObCall} -> {'ok', Pid, ObCall};
+        _Return -> _Return
     end.
 
-stop(Pid) when is_pid(Pid) ->
-    gen_listener:cast(Pid, 'stop').
+stop(Pid) ->
+    outbound_call_manager:stop(Pid).
 
-status(Pid) when is_pid(Pid) ->
+status(Pid) ->
     gen_listener:call(Pid, 'status').
+
+set_listener(Pid, ListenerPid) ->
+    gen_listener:call(Pid, {'set_listener', ListenerPid}).
 
 wait_control_queue(CallId) -> wait_control_queue(CallId, ?DEFAULT_CTRLQ_TIMEOUT).
 wait_control_queue(_CallId, After) when After =< 0 -> {'error', 'timeout'};
@@ -241,7 +240,7 @@ handle_cast({'originate_success', _JObj}, State) ->
     %CallId = wh_json:get_value(<<"Call-ID">>, JObj),
     %gen_listener:cast(self(), {'update_callid', CallId}),
     {'noreply', State};
-    
+
 %originate command failed
 handle_cast({'originate_fail', _JObj}, State) ->
     lager:info("Outbound call originate failed"),
@@ -251,7 +250,7 @@ handle_cast({'originate_fail', _JObj}, State) ->
 
 handle_cast({'channel_bridged', JObj}, State) ->
     OtherLegCallId = wh_json:get_binary_value(<<"Other-Leg-Call-ID">>, JObj),
-    lager:debug("Outbound call bridged to ~p", [OtherLegCallId]),
+    lager:debug("outbound call bridged to ~p", OtherLegCallId),
     gen_listener:cast(self(), {'update_callid', OtherLegCallId}),
     {'noreply', State};
 
@@ -266,9 +265,11 @@ handle_cast({'channel_destroy', _JObj}, State) ->
     {'noreply', State};
 
 handle_cast({'gen_listener',{'is_consuming',_IsConsuming}}, State) ->
+    lager:debug("jerry -- is_consuming ~p", [_IsConsuming]),
     {'noreply', State};
 
 handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
+    lager:debug("jerry -- created_queue ~p", [_QueueName]),
     gen_listener:cast(self(), 'originate_outbound_call'),
     {'noreply', State#state{myq=_QueueName}};
 
