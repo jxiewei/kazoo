@@ -834,6 +834,7 @@ maybe_set_nospeak_flags(Node, UUID, JObj) ->
 -define(CONFERENCE_FLAGS, [{<<"mute">>, <<"Mute">>}
                            ,{<<"deaf">>, <<"Deaf">>}
                            ,{<<"moderator">>, <<"Moderator">>}
+                           ,{<<"endconf">>, <<"EndConf">>}
                            ]).
 
 -spec get_conference_flags(wh_json:object()) -> binary().
@@ -853,7 +854,7 @@ get_conference_flags(JObj) ->
 maybe_add_conference_flag({K, V}, Acc) ->
     case lists:keyfind(K, 2, ?CONFERENCE_FLAGS) of
         'false' -> Acc;
-        {FSFlag, _} when V =:= 'true' -> [<<",">>, FSFlag | Acc];
+        {FSFlag, _} when V =:= 'true' -> [<<"|">>, FSFlag | Acc];
         _ -> Acc
     end.
 

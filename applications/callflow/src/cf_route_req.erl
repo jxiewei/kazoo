@@ -48,7 +48,7 @@ maybe_reply_to_req(JObj, Props, Call, Flow, NoMatch) ->
 
     case kz_buckets:consume_tokens(Name, Cost) of
         'false' ->
-            lager:debug("bucket ~s doesn't have enough tokens(~b needed) for this call", [Name, Cost]);
+            lager:info("bucket ~s doesn't have enough tokens(~b needed) for this call", [Name, Cost]);
         'true' ->
             ControllerQ = props:get_value('queue', Props),
             cache_call(Flow, NoMatch, ControllerQ, Call),

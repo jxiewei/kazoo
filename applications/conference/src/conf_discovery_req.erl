@@ -134,6 +134,7 @@ handle_search_error(Conference, Call, Srv) ->
             conf_participant:set_conference(Conference, Srv),
             conf_participant:join_local(Srv),
             wait_for_creation(Conference)
+            %%FIXME: Here it's a bug that the first participant not played entry-prompt.
     catch
         'exit':{{'shutdown', {'server_initiated_close', 403, <<"ACCESS_REFUSED", _/binary>>}}, _} ->
             lager:debug("conference queue ~s is exclusive, waiting for conference creation by initial participant", [Queue]),
@@ -165,6 +166,8 @@ wait_for_creation(Conference, After) ->
 
 -spec handle_search_resp(wh_json:object(), whapps_conference:conference(), whapps_call:call(), pid()) -> 'ok'.
 handle_search_resp(JObj, Conference, Call, Srv) ->
+    Queue = whapps_conference:id(Conference),
+    _ = amqp_util:queue_delete(Queue),
     MaxParticipants =  whapps_conference:max_participants(Conference),
     Participants = length(wh_json:get_value(<<"Participants">>, JObj, [])),
     case (MaxParticipants =/= 0) andalso (Participants >= MaxParticipants) of

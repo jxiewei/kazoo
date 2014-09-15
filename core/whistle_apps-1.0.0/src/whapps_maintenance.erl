@@ -142,6 +142,8 @@ migrate() ->
     WhappsUpdates = [fun(L) -> [<<"sysconf">> | lists:delete(<<"sysconf">>, L)] end
                      ,fun(L) -> [<<"reorder">> | lists:delete(<<"reorder">>, L)] end
                      ,fun(L) -> [<<"omnipresence">> | lists:delete(<<"omnipresence">>, L)] end
+                     ,fun(L) -> [<<"outbound">> | lists:delete(<<"outbound">>, L)] end
+                     ,fun(L) -> [<<"broadcast">> | lists:delete(<<"broadcast">>, L)] end
                     ],
     StartWhapps = whapps_config:get(<<"whapps_controller">>, <<"whapps">>, ?DEFAULT_WHAPPS),
     _ = whapps_config:set_default(<<"whapps_controller">>

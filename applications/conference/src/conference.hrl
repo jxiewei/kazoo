@@ -55,5 +55,19 @@
 -define(DEFAULT_ADVERTISE_CONFIG, 'undefined').
 -define(DEFAULT_CHAT_CONFIG, 'undefined').
 
+-record(partylog, {
+        tasklogid
+        ,call_id
+        ,caller_id_number
+        ,callee_id_number
+        ,start_tstamp
+        ,end_tstamp
+        ,answer_tstamp
+        ,hangup_tstamp
+        ,final_state
+        ,hangup_cause
+        ,owner_id
+        }).
+
 -define(CONFERENCE_HRL, 'true').
 -endif.

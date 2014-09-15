@@ -481,7 +481,6 @@ get_originate_action(<<"ivrcall">>, JObj) ->
         ,"' inline"
         ]);
 
-
 get_originate_action(<<"bridge">>, JObj) ->
     lager:debug("got originate with action bridge"),
     CallId = wh_json:get_binary_value(<<"Existing-Call-ID">>, JObj),

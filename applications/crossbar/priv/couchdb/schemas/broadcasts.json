@@ -1,0 +1,92 @@
+{
+   "_id":"broadcasts",
+   "$schema":"http://json-schema.org/draft-03/schema#",
+   "id":"http://json-schema.org/draft-03/schema#",
+   "description":"Schema for broadcast tasks",
+   "properties":{
+      "name":{
+         "name":"Name",
+         "description":"A friendly name for the broadcast task",
+         "required":true,
+         "type":"string",
+         "minLength":1,
+         "maxLength":128
+      },
+      "type":{
+        "name":"Broadcast type",
+        "description":"The type of broadcast",
+        "required":true,
+        "type":"string",
+        "enum":["file", "recording", "conference"]
+      },
+      "media_id":{
+          "name":"Media (ID)",
+          "description":"The ID of the media object broadcasted to participants",
+          "type":"string",
+          "maxlength":128
+      },
+      "scheduler":{
+        "name":"Scheduler type",
+        "description":"Type of scheduler, 0/1/2",
+        "required":true,
+        "type":"integer",
+        "enum":[0, 1, 2]
+      },
+      "schedulearg":{
+        "name":"Scheduler argument",
+        "description":"Arguments of scheduler",
+        "type":"object",
+        "default":{
+        }
+      },
+      "presenters":{
+         "name":"Presenters",
+         "description":"Defines the presenters of the broadcast",
+         "type":"array",
+         "items":{
+            "type":"string"
+         },
+         "default":[
+         ] 
+      },
+      "listeners":{
+         "name":"Listeners",
+         "description":"Defines the listeners of the broadcast",
+         "required":true,
+         "type":"array",
+         "items": {
+            "type":"string"
+         },
+         "default":[
+         ]
+      },
+      "cid_name":{
+         "type":"string",
+         "minLength":1,
+         "maxLength":15
+      },
+      "cid_number":{
+         "type":"string",
+         "minLength":1,
+         "maxLength":15
+      }
+   },
+
+    "anyOf" :[
+        {
+            "title": "media_id required if type is file",
+            "properties": {
+                "type": { "enum" : ["file"] },
+                "media_id": {"required":true}
+            }
+        },
+
+        {
+            "title":"schedulearg required",
+            "properties": {
+                "scheduler": {"enum" :[1, 2]},
+                "schedulearg":{"required":true}
+            }
+        }
+    ]
+}

@@ -282,6 +282,7 @@ handle_channel_status(JObj, _Props) ->
                 props:filter_undefined(
                   [{<<"Call-ID">>, CallId}
                    ,{<<"Control-Queue">>, ecallmgr_call_control:queue_name(Pid)}
+                   ,{<<"Answered">>, wh_json:get_value(<<"answered">>, Channel)}
                    ,{<<"Status">>, <<"active">>}
                    ,{<<"Switch-Hostname">>, Hostname}
                    ,{<<"Switch-Nodename">>, wh_util:to_binary(Node)}

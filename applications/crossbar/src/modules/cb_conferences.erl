@@ -290,13 +290,18 @@ kickoff_conference(Context) ->
     {'ok', AuthDoc} = couch_mgr:open_cache_doc(?TOKEN_DB, cb_context:auth_token(Context)),
     UserId = wh_json:get_value(<<"owner_id">>, AuthDoc),
 
-    Pid = ob_conference:kickoff(AccountId, UserId, wh_json:get_value(<<"_id">>, JObj)),
-    lager:info("ob_conference process started, pid ~p", [Pid]),
-    crossbar_util:response_202(<<"processing request">>, Context).
+    case ob_conference:kickoff(AccountId, UserId, wh_json:get_value(<<"_id">>, JObj)) of
+        'ok' -> 
+            lager:info("ob_conference process started"),
+            crossbar_util:response_202(<<"processing request">>, Context);
+        {'error', Reason} ->
+            lager:info("ob_conference start failed, reason ~p", [Reason]),
+            crossbar_util:response('error', <<"conference start failed, reason ", (wh_util:to_binary(Reason))/binary>>, 500, Context)
+    end.
 
 end_conference(Context) ->
     JObj = cb_context:doc(Context),
-    'ok' = ob_conference:kick(wh_json:get_value(<<"_id">>, JObj)),
+    'ok' = ob_conference:stop(wh_json:get_value(<<"_id">>, JObj)),
     crossbar_util:response_202(<<"processing request">>, Context).
 
 conference_status(Context) ->

@@ -298,7 +298,7 @@ extract_multipart_content({'body', Datum, Req}, JObj) ->
                           {cb_context:context(), cowboy_req:req()} |
                           halt_return().
 extract_file(Context, ContentType, Req0) ->
-    case cowboy_req:body(Req0) of
+    case cowboy_req:body(Req0, [{'length', '134217728'}]) of
         {'error', 'badarg'} ->
             lager:debug("failed to extract file body"),
             {Context, Req0};

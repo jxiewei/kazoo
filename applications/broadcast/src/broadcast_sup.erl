@@ -1,42 +1,27 @@
 %%%-------------------------------------------------------------------
-%%% @copyright (C) 2010-2013, 2600Hz
+%%% @copyright (C) 2012, VoIP, INC
 %%% @doc
-%%% Root supervisor tree for stepswitch routing WhApp
+%%%
 %%% @end
+%%% @contributors
 %%%-------------------------------------------------------------------
-
--module(stepswitch_sup).
+-module(broadcast_sup).
 
 -behaviour(supervisor).
 
--include_lib("whistle/include/wh_types.hrl").
--include("stepswitch.hrl").
+-include("broadcast.hrl").
 
 -export([start_link/0]).
 -export([init/1]).
 
--define(POOL(N), {N, {'poolboy', 'start_link', [[{'worker_module', 'stepswitch_cnam'}
-                                                 ,{'name', {'local', N}}
-                                                 ,{'size', 10}
-                                                 ,{'max_overflow', 50}
-                                                 ,{'neg_resp_threshold', 1}
-                                                ]
-                                               ]}
-                  ,'permanent', 5000, 'worker', ['poolboy']
-                 }).
 
--define(ORIGIN_BINDINGS, [
-                          [{'type', <<"resource">>}]
-                         ]).
--define(CACHE_PROPS, [
-                      {'origin_bindings', ?ORIGIN_BINDINGS}
-                     ]).
-
--define(CHILDREN, [?CACHE_ARGS(?STEPSWITCH_CACHE, ?CACHE_PROPS)
-                   ,?POOL(?STEPSWITCH_CNAM_POOL)
-                   ,?SUPER('stepswitch_request_sup')
-                   ,?WORKER('stepswitch_listener')
+-define(CHILDREN, [?WORKER('broadcast_manager')
                   ]).
+
+%% ===================================================================
+%% API functions
+%% ===================================================================
+
 
 %% ===================================================================
 %% API functions
@@ -49,7 +34,8 @@
 %% @end
 %%--------------------------------------------------------------------
 -spec start_link() -> startlink_ret().
-start_link() -> supervisor:start_link({'local', ?MODULE}, ?MODULE, []).
+start_link() ->
+    supervisor:start_link({'local', ?MODULE}, ?MODULE, []).
 
 %% ===================================================================
 %% Supervisor callbacks
@@ -66,10 +52,9 @@ start_link() -> supervisor:start_link({'local', ?MODULE}, ?MODULE, []).
 %%--------------------------------------------------------------------
 -spec init([]) -> sup_init_ret().
 init([]) ->
-    RestartStrategy = 'one_for_one',
+    RestartStrategy = one_for_one,
     MaxRestarts = 5,
     MaxSecondsBetweenRestarts = 10,
 
     SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
-
     {'ok', {SupFlags, ?CHILDREN}}.

@@ -706,7 +706,8 @@ add_leg(Props, LegId, #state{other_legs=Legs
         'true' -> State;
         'false' ->
             lager:debug("added leg ~s to call", [LegId]),
-            ecallmgr_call_sup:start_control_process(Node, LegId, FetchId),
+            %ecallmgr_call_sup:start_event_process(Node, LegId),
+            %ecallmgr_call_sup:start_control_process(Node, LegId, FetchId),
             ConsumerPid = wh_amqp_channel:consumer_pid(),
             _ = spawn(fun() ->
                               _ = put('callid', CallId),
