@@ -1,0 +1,44 @@
+{
+   "_id":"clientsoft",
+   "$schema":"http://json-schema.org/draft-03/schema#",
+   "id":"http://json-schema.org/draft-03/schema#",
+   "description":"Schema for clientsoft management",
+   "properties":{
+      "version_name":{
+         "name":"Version Name",
+         "description":"A friendly name of the version",
+         "required":true,
+         "type":"string",
+         "minLength":1,
+         "maxLength":128
+      },
+      "version_code":{
+        "name":"Version Code",
+        "description":"Numeric code of the version",
+        "type":"integer"
+      },
+      "package_name":{
+        "name":"Package Name",
+        "description":"Package name of the client software",
+        "type":"string",
+        "required":true,
+        "minLength":1,
+        "maxLength":64
+      },
+      "release_notes":{
+        "name":"Release Notes",
+        "description":"Release notes of the client software version",
+        "type":"string",
+        "required":true,
+        "minLength":1,
+        "maxLength":4096
+      },
+      "oem_name":{
+        "name":"OEM Name",
+        "description":"OEM manufacture name",
+        "type":"string",
+        "minLength":1,
+        "maxLength":128
+      }
+   }
+}

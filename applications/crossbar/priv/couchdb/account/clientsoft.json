@@ -1,0 +1,16 @@
+{
+    "_id": "_design/clientsoft"
+    ,"language": "javascript"
+    ,"views": {
+        "crossbar_listing": {
+            "map": "function(doc) { if (doc.pvt_type != 'clientsoft' || doc.pvt_deleted) return; emit(doc._id, {'id': doc._id, 'version_name': doc.version_name, 'version_code': doc.version_code, 'package_name': doc.package_name, 'release_notes': doc.release_notes, 'oem_name': doc.oem_name}); }"
+        },
+        "newestver": {
+            "map": "function(doc) { if (doc.pvt_type != 'clientsoft' || doc.pvt_deleted) return; emit({'package_name': doc.package_name, 'oem_name': doc.oem_name}, {'version_code': doc.version_code, 'id': doc._id})};",
+            "reduce": "function(key, values, rereduce) {var maxv = -Infinity; var maxid = null; for (var i = 0, v; v = values[i]; i++) { if (v.version_code > maxv) { maxv = v.version_code; maxid = v.id; } } return {version_code: maxv, id: maxid}; }"
+        }
+    }
+    ,"filters": {
+        "export":"function(doc, req) { return ( doc.pvt_type == 'clientsoft' ); }"
+    }
+}
