@@ -16,6 +16,8 @@
 -module(whapps_speech).
 
 -include("whistle_apps.hrl").
+-include_lib("whistle_media/include/wh_media.hrl").
+-include_lib("kazoo_oauth/include/kazoo_oauth_types.hrl").
 
 -export([create/1
          ,create/2
@@ -138,6 +140,28 @@ create(<<"ispeech">> = Engine, Text, Voice, Format, Options) ->
             Response = ibrowse:send_req(BaseUrl, Headers, 'post', Body, HTTPOptions),
             create_response(Engine, Response)
     end;
+
+create(<<"bing">> = Engine, Text, Voice, Format, _Options) ->
+    VoiceMappings = [{<<"male/en-US">>, <<"en-us">>}
+                     ,{<<"male/zh-CN">>, <<"zh-cn">>}
+                    ],
+    case props:get_value(Voice, VoiceMappings) of
+        'undefined' ->
+            {'error', 'invalid_voice'};
+        BingVoice ->
+            {'ok', Token} = get_token(Engine),
+            BaseUrl = whapps_config:get_string(?MOD_CONFIG_CAT, <<"tts_url">>, <<"http://api.microsofttranslator.com/V2/Http.svc/Speak">>),
+            Fields = [{"language", wh_util:to_list(BingVoice)}
+                      ,{"format", "audio/"++wh_util:to_list(Format)}
+                      ,{"options", "MaxQuality"}
+                      ,{"text", wh_util:uri_encode(wh_util:to_list(Text))}
+                     ],
+            QS = string:join(lists:append(lists:map(fun({K,V}) -> [string:join([K,V], "=")] end, Fields)), "&"),
+            Headers = [{"Authorization", "Bearer "++Token}],
+            Response = ibrowse:send_req(BaseUrl++"?"++QS, Headers, 'get'),
+            create_response(Engine, Response)
+    end;
+
 create(_, _, _, _, _) ->
     {'error', 'unknown_provider'}.
 
@@ -294,7 +318,7 @@ create_response(_Engine, {'ok', "200", Headers, Content}) ->
     ContentType = props:get_value("Content-Type", Headers),
     ContentLength = props:get_value("Content-Length", Headers),
     lager:debug("created speech file ~s of length ~s", [ContentType, ContentLength]),
-    {'ok', wh_util:to_binary(ContentType), Content};
+    {'ok', wh_util:to_binary(ContentType), wh_util:to_binary(Content)};
 create_response(Engine, {'ok', Code, RespHeaders, Content}) ->
     lager:warning("creating speech file failed with code ~s: ~s", [Code, Content]),
     [lager:debug("hdr: ~p", [H]) || H <- RespHeaders],
@@ -330,3 +354,14 @@ convert_content(_, ContentType, ConvertTo) ->
 -spec tmp_file_name(ne_binary()) -> string().
 tmp_file_name(Ext) ->
     wh_util:to_list(<<"/tmp/", (wh_util:rand_hex_binary(10))/binary, "_voicemail.", Ext/binary>>).
+
+get_token(<<"bing">>=Engine) ->
+    case wh_cache:peek_local(?TTS_TOKEN_CACHE, Engine) of
+        {'ok', _Auth}=OK -> OK;
+        {'error', _} ->
+            AppId = whapps_config:get(?MOD_CONFIG_CAT, <<Engine/binary, "_tts_oauth_app">>),
+            %Bing returns url-encoded token, thus not necessary to call authorization_header here
+            {'ok', #oauth_token{expires=Expires, token=Token}} = kazoo_oauth_util:token(AppId),
+            wh_cache:store_local(?TTS_TOKEN_CACHE, Engine, Token, [{'expires', Expires }]),
+            {'ok', Token}
+    end.
