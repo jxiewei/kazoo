@@ -10,7 +10,8 @@
          ,get_oauth_app/1
          ,get_oauth_service_app/1
         ]).
--export([token/2
+-export([token/1
+         ,token/2
          ,verify_token/2
          ,refresh_token/4
          ,refresh_token/5
@@ -127,6 +128,8 @@ jwt(#oauth_service_app{email=AccountEmail
     _Verify = public_key:verify(JWT_FOR_SIGN, 'sha256', JWT_SIGNATURE, PublicKey),
     Assertion.
 
+token(AppId) when is_binary(AppId) -> token(AppId, 'undefined').
+
 -spec token( api_binary() | oauth_app(), api_binary() | oauth_refresh_token() ) -> {'ok', oauth_token()} | {'error', any()}.
 token(AppId, UserId) when is_binary(AppId) ->
     lager:debug("getting oauth-app ~p",[AppId]),
@@ -142,7 +145,32 @@ token(#oauth_app{user_prefix=UserPrefix}=App, UserId) when is_binary(UserId) ->
             lager:debug("unable to get oauth user id ~s: ~p", [DocId, _R]),
             Error
     end;
-token(_, 'undefined') -> {'error',<<"User doesn't have RefreshToken">>};
+token(#oauth_app{name=AppId
+                ,secret=Secret
+                ,provider=#oauth_provider{auth_url=AUTH_URL,scopes=Scope}} 
+      ,'undefined') -> 
+    Headers = [{"Content-Type","application/x-www-form-urlencoded"}],
+    Fields = [{"client_id", wh_util:to_list(wh_util:uri_encode(AppId))}
+              ,{"client_secret",wh_util:to_list(wh_util:uri_encode(Secret))}
+              ,{"grant_type","client_credentials"}
+              ,{"scope", wh_util:to_list(wh_util:uri_encode(Scope))}
+             ],
+    Body = string:join(lists:append(lists:map(fun({K,V}) -> [string:join([K,V], "=")] end, Fields)), "&"),
+    case ibrowse:send_req(wh_util:to_list(AUTH_URL), Headers, 'post', Body) of
+        {'ok', "200", _RespHeaders, RespXML} ->
+            JObj = wh_json:decode(RespXML),
+            Token = wh_json:get_value(<<"access_token">>, JObj),
+            Type = wh_json:get_value(<<"token_type">>, JObj),
+            Expires = wh_json:get_integer_value(<<"expires_in">>, JObj),
+            {'ok', #oauth_token{token=Token
+                                ,type=Type
+                                ,expires=Expires
+                                ,issued=wh_util:current_tstamp()}};
+        Else ->
+            lager:info("unable to get oauth token: ~p", [Else]),
+            {'error', Else}
+	end;
+    
 token(#oauth_app{name=AppId
                 ,secret=Secret
                 ,provider=#oauth_provider{auth_url=AUTH_URL}}
