@@ -162,6 +162,62 @@ create(<<"bing">> = Engine, Text, Voice, Format, _Options) ->
             create_response(Engine, Response)
     end;
 
+%%FIXME: google tts likely have some limitation in addition to 100 chars limit.
+%%Without sleep 1s between requests, the third req will fail cetainly.
+%%With sleep, it still fails often(tcp RESET by peer).
+create(<<"google">> = Engine, Text, Voice, _Format, _Options) ->
+    VoiceMappings = [{<<"female/en-US">>, <<"en-us">>}
+                     ,{<<"female/zh-CN">>, <<"zh_CN">>}
+                    ],
+    case props:get_value(Voice, VoiceMappings) of
+        'undefined' ->
+            {'error', 'invalid_voice'};
+        BingVoice ->
+            TextL = slice_text(Engine, Text),
+            Total = length(TextL),
+            {'ok', CT, Content, _Idx} = 
+                lists:foldl(
+                  fun(E, Acc) -> 
+                        {'ok', CT, C, Idx} = Acc,
+                        Response = google_tts(BingVoice, E, Total, Idx),
+                        Acc1 = case Response of
+                            {'ok', CT1, C1} -> {'ok', CT1, <<C/binary, (wh_util:to_binary(C1))/binary>>, Idx+1};
+                            _ -> {'ok', CT, C, Idx+1}
+                        end,
+                        timer:sleep(1000),
+                        Acc1 
+                  end, {'ok', 'undefined', <<>>, 0}, TextL),
+            {'ok', CT, Content}
+            %google_tts(BingVoice, Text, 1, 0)
+    end;
+
+create(<<"xunfei">> = Engine, Text, Voice, _Format, _Options) ->
+    VoiceMappings = [{<<"female/en-US">>, [{"ent","inet65_en"}, {"vcn","Catherine"}]}
+                     ,{<<"female/zh-CN">>, [{"ent","inet65"}, {"vcn","xiaoyan"}]}
+                     ,{<<"male/en-US">>, [{"ent","inet65_en"}, {"vcn","henry"}]}
+                     ,{<<"male/zh-CN">>, [{"ent","inet65"}, {"vcn","xiaoyu"}]}
+                    ],
+    case props:get_value(Voice, VoiceMappings) of
+        'undefined' ->
+            {'error', 'invalid_voice'};
+        XVoice ->
+            {'ok', [[Home]]} = init:get_argument('home'),
+            {'ok',Port} = xf_port:start([{"appid", "541a5dbd"}, {"work_dir", Home}]),
+            lager:debug("jerry -- voice ~p", [XVoice]),
+            {'ok', Data} = xf_port:tts(Port, XVoice++
+                                                 [{"aue", "speex-wb"}
+                                                 ,{"auf", "audio/L16"}
+                                                 ,{"rate", "16000"}
+                                                 ,{"spd", "5"}
+                                                 ,{"vol", "5"}
+                                                 ,{"tte", "utf8"}
+                                                ], Text),
+            lager:debug("xf_tts returned ~p bytes", [byte_size(Data)]),
+            xf_port:stop(Port),
+            {'ok', <<"audio/wav">>, Data} 
+    end;
+
+
 create(_, _, _, _, _) ->
     {'error', 'unknown_provider'}.
 
@@ -355,6 +411,45 @@ convert_content(_, ContentType, ConvertTo) ->
 tmp_file_name(Ext) ->
     wh_util:to_list(<<"/tmp/", (wh_util:rand_hex_binary(10))/binary, "_voicemail.", Ext/binary>>).
 
+
+google_tts(Language, Text, Total, Idx) -> 
+    BaseUrl = whapps_config:get_string(?MOD_CONFIG_CAT, <<"tts_url">>, <<"http://translate.google.com/translate_tts">>),
+    Fields = [{"tl", wh_util:to_list(Language)}
+              ,{"ie", "UTF-8"}
+              ,{"q", wh_util:uri_encode(wh_util:to_list(Text))}
+              ,{"textlen", wh_util:to_list(byte_size(Text))}
+              ,{"idx", wh_util:to_list(Idx)}
+              ,{"total", wh_util:to_list(Total)}
+             ],
+    %QS = string:join(lists:append(lists:map(fun({K,V}) -> [string:join([K,V], "=")] end, Fields)), "&"),
+    QS = mochiweb_util:urlencode(Fields),
+    Headers = [{"Referer", "http://www.gstatic.com/translate/sound_player2.swf"}
+               ,{"User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_7_3) " 
+                               "AppleWebKit/535.19 (KHTML, like Gecko) Chrome/18.0.1025.163 Safari/535.19"
+                }
+              ],
+    Response = ibrowse:send_req(BaseUrl++"?"++QS, Headers, 'get', [], [{max_sessions, 100}, {max_pipeline_size, 100}, {trace, 'true'}]),
+    lager:debug("jerry -- sending req ~s", [BaseUrl++"?"++QS]),
+    create_response(<<"google">>, Response).
+
+utf8_string_head(Bin, MaxChars) when is_binary(Bin) ->
+    case byte_size(Bin) > MaxChars of
+        'true' ->
+            <<Bytes:MaxChars/binary, _/binary>> = Bin,
+            ValidBytes = mochiutf8:valid_utf8_bytes(Bytes),
+            SZ = byte_size(ValidBytes),
+            <<ValidBytes:SZ/binary, Left/binary>> = Bin,
+            {ValidBytes, Left};
+        'false' -> {Bin, <<>>}
+    end.
+
+slice_text(_, <<>>) -> [];
+slice_text(<<"google">>=Engine, Bin) when is_binary(Bin) ->
+    {Head, Tail} = utf8_string_head(Bin, 99),
+    [Head|slice_text(Engine, Tail)].
+
+
+-spec get_token(ne_binary()) -> {'ok', string()}.
 get_token(<<"bing">>=Engine) ->
     case wh_cache:peek_local(?TTS_TOKEN_CACHE, Engine) of
         {'ok', _Auth}=OK -> OK;
@@ -365,3 +460,4 @@ get_token(<<"bing">>=Engine) ->
             wh_cache:store_local(?TTS_TOKEN_CACHE, Engine, Token, [{'expires', Expires }]),
             {'ok', Token}
     end.
+
