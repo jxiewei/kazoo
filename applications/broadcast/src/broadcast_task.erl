@@ -37,6 +37,7 @@
                 ,user :: wh_json:new() %Doc of request user
                 ,task :: wh_json:new()
                 ,tasktype :: atom()
+                ,iteration :: pos_integer()
                 ,participants :: dict:new()
                 ,tref :: timer:tref() %check_exit_condition timer
                 ,self :: pid()
@@ -178,6 +179,7 @@ handle_cast({'start_participant', [{Moderator, Number}|Others]},
                                            ,task=Task
                                            ,taskid=TaskId
                                            ,tasktype=TaskType
+                                           ,iteration=Iteration
                                            ,participants=Parties
                                            ,recordid=RecordId
                                           }=State) ->
@@ -187,11 +189,11 @@ handle_cast({'start_participant', [{Moderator, Number}|Others]},
 
     case TaskType of
         'file' ->
-            {'ok', Pid} = broadcast_participant:start(Call, {TaskType, Moderator, wh_json:get_value(<<"media_id">>, Task)});
+            {'ok', Pid} = broadcast_participant:start(Call, {TaskType, Moderator, wh_json:get_value(<<"media_id">>, Task)}, Iteration);
         'recording' ->
-            {'ok', Pid} = broadcast_participant:start(Call, {TaskType, Moderator, RecordId});
+            {'ok', Pid} = broadcast_participant:start(Call, {TaskType, Moderator, RecordId}, Iteration);
         'conference' ->
-            {'ok', Pid} = broadcast_participant:start(Call, {TaskType, Moderator, TaskId})
+            {'ok', Pid} = broadcast_participant:start(Call, {TaskType, Moderator, TaskId}, Iteration)
     end,
     timer:apply_after(wh_util:to_integer(1000/?ORIGINATE_RATE), gen_listener, cast, [self(), {'start_participant', Others}]),
     {'noreply', State#state{participants=dict:store(Number, #participant{pid=Pid, partylog=#partylog{}}, Parties)}};
@@ -372,6 +374,7 @@ init([AccountId, UserId, TaskId]) ->
     {'ok', UserDoc} = couch_mgr:open_cache_doc(AccountDb, UserId),
     {'ok', TaskDoc} = couch_mgr:open_cache_doc(AccountDb, TaskId),
     Type = wh_util:to_atom(wh_json:get_value(<<"type">>, TaskDoc)),
+    Iteration = wh_json:get_integer_value(<<"iteration">>, TaskDoc, 1),
 
     {'ok', #state{account_id=AccountId
                     ,userid=UserId
@@ -380,6 +383,7 @@ init([AccountId, UserId, TaskId]) ->
                     ,user=UserDoc
                     ,task=TaskDoc
                     ,tasktype=Type
+                    ,iteration=Iteration
                     ,participants=dict:new()
                     ,self=self()
                     ,logid=wh_util:rand_hex_binary(16)
