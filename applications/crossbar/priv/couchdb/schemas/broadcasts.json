@@ -39,6 +39,13 @@
         "default":{
         }
       },
+      "iteration":{
+        "name":"iteration count",
+        "description":"Play media file iteratively, this's the count",
+        "type":"integer",
+        "default":1,
+        "minimum":1
+      },
       "presenters":{
          "name":"Presenters",
          "description":"Defines the presenters of the broadcast",

@@ -6,7 +6,7 @@
 -include("broadcast.hrl").
 
 %%API
--export([start/2
+-export([start/3
         ,stop/1
         ,status/1]).
 
@@ -28,6 +28,7 @@
 
 -record(state, {call :: whapps_call:call()
                ,type :: ne_binary()
+               ,iteration :: pos_integer()
                ,status
                ,self :: pid()
                ,myq
@@ -39,13 +40,13 @@
                }).
 
 
-start(Call, Type) ->
+start(Call, Type, Iteration) ->
     Bindings = [{'self', []}],
     gen_listener:start_link(?MODULE, [{'responders', ?RESPONDERS}
                                       ,{'bindings', Bindings} ,{'queue_name', ?QUEUE_NAME}
                                       ,{'queue_options', ?QUEUE_OPTIONS}
                                       ,{'consume_options', ?CONSUME_OPTIONS}
-                                     ], [self(), Call, Type]).
+                                     ], [self(), Call, Type, Iteration]).
 
 stop(Pid) ->
     gen_listener:cast(Pid, 'stop').
@@ -93,7 +94,7 @@ handle_cast({'gen_listener',{'created_queue',_QueueName}}, State) ->
                            ,myq=_QueueName}};
 
 handle_cast('answered', State) ->
-    #state{call=Call, type=Type} = State,
+    #state{call=Call, type=Type, iteration=Iteration} = State,
     lager:debug("Broadcast participant answered"),
     case Type of 
         {'file', _Moderator, MediaId} ->
@@ -104,6 +105,7 @@ handle_cast('answered', State) ->
             join_conference(Call, ConferenceId, Moderator)
     end,
     {'noreply', State#state{status='online'
+                           ,iteration=Iteration-1
                            ,answer_tstamp=wh_util:current_tstamp()}};
 
 handle_cast({'originate_ready', JObj}, State) ->
@@ -146,20 +148,32 @@ handle_cast({'hangup', HangupCause}, State) ->
                                   ,hangupcause=HangupCause
                                   ,hangup_tstamp=wh_util:current_tstamp()}};
 
-handle_cast({'play_completed', Result}, State) ->
-    lager:debug("Finished playing to broadcast participant, result is ~p", [Result]),
+%% All iteration of play succeeded, hangup.
+handle_cast({'play_completed', <<"FILE PLAYED">>}, State=#state{iteration=Iter}) when Iter == 0 ->
+    lager:debug("play complete, finished all iteration"),
     #state{call=Call} = State,
     whapps_call_command:hangup(Call),
-    case Result of
-        %% normally completed
-        <<"FILE PLAYED">> -> 
-            {'stop', 'normal', State#state{status='succeeded'}};
-        %% Interrupted by peer
-        _ -> 
-            lager:info("Broadcast playback may be interrupted by peer, result ~p", [Result]),
-            {'stop', 'normal', State#state{status='interrupted'}} 
-    end;
+    {'stop', 'normal', State#state{status='succeeded'}};
 
+%% One iteration of play succeed, continue.
+handle_cast({'play_completed', <<"FILE PLAYED">>}, State=#state{iteration=Iter}) when Iter > 0 ->
+    lager:debug("play complete, ~p iteration remained", [Iter]),
+    #state{type=Type, call=Call} = State,
+    case Type of 
+        {'file', _Moderator, MediaId} ->
+            whapps_call_command:play(<<$/, (whapps_call:account_db(Call))/binary, $/, MediaId/binary>>, Call);
+        {'recording', _Moderator, MediaId} ->
+            whapps_call_command:play(<<$/, (whapps_call:account_db(Call))/binary, $/, MediaId/binary>>, Call);
+        _ -> 'ok'
+    end,
+    {'noreply', State#state{iteration=Iter-1}};
+
+%% Interrupted by peer
+handle_cast({'play_completed', Result}, State) ->
+    #state{call=Call} = State,
+    lager:info("Broadcast playback may be interrupted by peer, result ~p", [Result]),
+    whapps_call_command:hangup(Call),
+    {'stop', 'normal', State#state{status='interrupted'}};
 
 handle_cast('init', State) ->
     #state{call=Call, myq=Q} = State,
@@ -279,12 +293,13 @@ terminate(Reason, State) ->
 code_change(_OldVsn, State, _Extra) ->
     {'ok', State}.
 
-init([Server, Call, Type]) ->
+init([Server, Call, Type, Iteration]) ->
     process_flag('trap_exit', 'true'),
     CallId = wh_util:rand_hex_binary(8),
     put('callid', CallId),
     {'ok', #state{call=whapps_call:set_call_id(CallId, Call)
                  ,type=Type
+                 ,iteration=Iteration
                  ,self=self()
                  ,server=Server
                  ,status='initial'

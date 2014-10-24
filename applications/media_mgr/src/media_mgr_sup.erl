@@ -11,12 +11,14 @@
 -behaviour(supervisor).
 
 -include_lib("whistle/include/wh_types.hrl").
+-include_lib("whistle_media/include/wh_media.hrl").
 
 -export([start_link/0]).
 -export([init/1]).
 
 -define(CHILDREN, [?SUPER('whistle_media_sup')
                    ,?WORKER('media_listener')
+                   ,?CACHE(?TTS_TOKEN_CACHE)
                   ]).
 
 %% ===================================================================
