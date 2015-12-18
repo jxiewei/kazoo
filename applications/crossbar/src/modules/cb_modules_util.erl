@@ -184,6 +184,17 @@ maybe_originate_quickcall(Context) ->
             originate_quickcall(Endpoints, Call, default_bleg_cid(Call, Context))
     end.
 
+maybe_originate_ivrcall(Context) ->
+    Call = create_call_from_context(Context),
+    [Number, Realm] = binary:split(whapps_call:request(Call), <<"@">>),
+    Endpoint = [{<<"Invite-Format">>, <<"route">>}
+                ,{<<"Route">>,  <<"loopback/", Number/binary, "/context_2">>}
+                ,{<<"To-DID">>, Number}
+                ,{<<"To-Realm">>, Realm}
+               ],
+    originate_ivrcall([wh_json:from_list(Endpoint)], Call, Context).
+
+
 -spec create_call_from_context(cb_context:context()) -> whapps_call:call().
 create_call_from_context(Context) ->
     Routines =
@@ -215,6 +226,12 @@ request_specific_extraction_funs_from_nouns(Context, ?USERS_QCALL_NOUNS(UserId, 
      ,{fun whapps_call:set_authorizing_type/2, <<"user">>}
      ,{fun whapps_call:set_request/2, NumberURI}
      ,{fun whapps_call:set_to/2, NumberURI}
+    ];
+request_specific_extraction_funs_from_nouns(Context, ?USERS_IVRCALL_NOUNS(UserId, Number)) ->
+    [{fun whapps_call:set_authorizing_id/2, UserId}
+     ,{fun whapps_call:set_authorizing_type/2, <<"user">>}
+     ,{fun whapps_call:set_request/2, <<Number/binary, "@ivrcall">>}
+     ,{fun whapps_call:set_to/2, <<Number/binary, "@ivrcall">>}
     ];
 request_specific_extraction_funs_from_nouns(_Context, _ReqNouns) ->
     [].
@@ -307,6 +324,53 @@ originate_quickcall(Endpoints, Call, Context) ->
     JObj = wh_json:normalize(wh_json:from_list(wh_api:remove_defaults(Request))),
     crossbar_util:response_202(<<"quickcall initiated">>, JObj, cb_context:set_resp_data(Context, Request)).
 
+normalize_ivrcall_data(Call, Context) ->
+    Data = cb_context:req_data(Context),
+    normalize_ivrcall_data(wh_json:get_value(<<"IVRName">>, Data), Call, Context).
+
+normalize_ivrcall_data(<<"play_advertisement">>, Call, Context) ->
+    Data = cb_context:req_data(Context),
+    MediaId = wh_json:get_value(<<"Text">>, Data),
+    wh_json:set_value(<<"Text">>, <<$/, (whapps_call:account_db(Call))/binary, $/, MediaId/binary>>, Data);
+
+normalize_ivrcall_data(_, _Call, Context) ->
+    cb_context:req_data(Context).
+
+originate_ivrcall(Endpoints, Call, Context) ->
+    AutoAnswer = wh_json:is_true(<<"auto_answer">>, cb_context:query_string(Context), 'true'),
+    CCVs = [{<<"Account-ID">>, cb_context:account_id(Context)}
+            ,{<<"Retain-CID">>, <<"true">>}
+            ,{<<"Inherit-Codec">>, <<"false">>}
+            ,{<<"Authorizing-Type">>, whapps_call:authorizing_type(Call)}
+            ,{<<"Authorizing-ID">>, whapps_call:authorizing_id(Call)}
+           ],
+    MsgId = case wh_util:is_empty(cb_context:req_id(Context)) of
+                'true' -> wh_util:rand_hex_binary(16);
+                'false' -> cb_context:req_id(Context)
+            end,
+    Number = whapps_call:request_user(Call),
+    Data = normalize_ivrcall_data(Call, Context),
+    Request = [{<<"Application-Name">>, <<"ivrcall">>}
+               ,{<<"Application-Data">>, Data}
+               ,{<<"Originate-Immediate">>, true}
+               ,{<<"Msg-ID">>, MsgId}
+               ,{<<"Endpoints">>, maybe_auto_answer(AutoAnswer, Endpoints)}
+               ,{<<"Timeout">>, get_timeout(Context)}
+               ,{<<"Ignore-Early-Media">>, get_ignore_early_media(Context)}
+               ,{<<"Media">>, get_media(Context)}
+               ,{<<"Outbound-Caller-ID-Name">>, get_caller_id_name(Context)}
+               ,{<<"Outbound-Caller-ID-Number">>, get_caller_id_number(Context)}
+               ,{<<"Outbound-Callee-ID-Name">>, Number}
+               ,{<<"Outbound-Callee-ID-Number">>, Number}
+               ,{<<"Dial-Endpoint-Method">>, <<"simultaneous">>}
+               ,{<<"Continue-On-Fail">>, 'false'}
+               ,{<<"Custom-Channel-Vars">>, wh_json:from_list(CCVs)}
+               ,{<<"Export-Custom-Channel-Vars">>, [<<"Account-ID">>, <<"Retain-CID">>, <<"Authorizing-ID">>, <<"Authorizing-Type">>]}
+               | wh_api:default_headers(<<>>, <<"resource">>, <<"originate_req">>, ?APP_NAME, ?APP_VERSION)
+              ],
+    wapi_resource:publish_originate_req(props:filter_undefined(Request)),
+    crossbar_util:response_202(<<"processing request">>, cb_context:set_resp_data(Context, Request)).
+
 -spec maybe_auto_answer(wh_json:objects(), boolean()) -> wh_json:objects().
 maybe_auto_answer([Endpoint], AutoAnswer) ->
     [wh_json:set_value([<<"Custom-Channel-Vars">>, <<"Auto-Answer">>], AutoAnswer, Endpoint)];
@@ -348,16 +412,58 @@ get_media(Context) ->
 -spec get_caller_id_name(cb_context:context()) -> api_binary().
 get_caller_id_name(Context) ->
     case cb_context:req_value(Context, <<"cid-name">>) of
-        'undefined' -> 'undefined';
+        'undefined' -> get_user_caller_id_name(Context);
         CIDName -> wh_util:uri_decode(CIDName)
     end.
+
+get_user_caller_id_name(Context) ->
+    case cb_context:req_nouns(Context) of
+        ?USERS_IVRCALL_NOUNS(_UserId,_) ->
+            AccountDb = cb_context:account_db(Context),
+            User = couch_mgr:open_cache_doc(AccountDb, _UserId),
+            case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"name">>], User) of
+                'undefined' -> get_account_caller_id_name(Context);
+                CIDName -> CIDName
+            end;
+        _ -> get_account_caller_id_name(Context)
+    end.
+
+get_account_caller_id_name(Context) ->
+    Account = cb_context:account_doc(Context),
+    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"name">>], Account) of
+        'undefined' -> 'undefined';
+        CIDName -> CIDName
+    end.
+
 
 -spec get_caller_id_number(cb_context:context()) -> api_binary().
 get_caller_id_number(Context) ->
     case cb_context:req_value(Context, <<"cid-number">>) of
-        'undefined' -> 'undefined';
+        'undefined' -> get_user_caller_id_number(Context);
         CIDNumber -> wh_util:uri_decode(CIDNumber)
     end.
+
+get_user_caller_id_number(Context) ->
+    case cb_context:req_nouns(Context) of
+        ?USERS_IVRCALL_NOUNS(_UserId,_) ->
+            AccountDb = cb_context:account_db(Context),
+            {'ok', User} = couch_mgr:open_cache_doc(AccountDb, _UserId),
+            case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"number">>], User) of
+                'undefined' -> get_account_caller_id_number(Context);
+                CIDNumber -> CIDNumber
+            end;
+        _ -> get_account_caller_id_number(Context)
+    end.
+
+get_account_caller_id_number(Context) ->
+    Account = cb_context:account_doc(Context),
+    AccountId = cb_context:account_id(Context),
+    case wh_json:get_value([<<"caller_id">>, <<"external">>, <<"number">>], Account) of
+        'undefined' -> 'undefined';
+        CIDNumber -> CIDNumber
+    end.
+
+
 
 %%--------------------------------------------------------------------
 %% @private

@@ -54,6 +54,11 @@
         ,[{<<"users">>, [UserId, ?QUICKCALL_PATH_TOKEN , Number]}
           ,{?WH_ACCOUNTS_DB, [_]}
          ]).
+-define(IVRCALL_PATH_TOKEN, <<"ivrcall">>).
+-define(USERS_IVRCALL_NOUNS(UserId, Number)
+        ,[{<<"users">>, [UserId, ?IVRCALL_PATH_TOKEN, Number]}
+          ,{?WH_ACCOUNTS_DB, [_]}
+         ]).
 
 -define(DEFAULT_MODULES, ['cb_about', 'cb_accounts', 'cb_acls'
                           ,'cb_api_auth', 'cb_apps_store'

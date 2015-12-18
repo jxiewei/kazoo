@@ -92,7 +92,9 @@ allowed_methods(_, ?VCARD) ->
     [?HTTP_GET].
 
 allowed_methods(_, ?QUICKCALL_PATH_TOKEN, _) ->
-    [?HTTP_GET].
+    [?HTTP_GET];
+allowed_methods(_, ?IVRCALL_PATH_TOKEN, _) ->
+  [?HTTP_POST].
 
 -spec content_types_provided(cb_context:context()) ->
                                     cb_context:context().
@@ -131,7 +133,8 @@ resource_exists(_) -> 'true'.
 resource_exists(_, ?CHANNELS) -> 'true';
 resource_exists(_, ?VCARD) -> 'true'.
 
-resource_exists(_, ?QUICKCALL_PATH_TOKEN, _) -> 'true'.
+resource_exists(_, ?QUICKCALL_PATH_TOKEN, _) -> 'true';
+resource_exists(_, ?IVRCALL_PATH_TOKEN, _) -> 'true'.
 
 %%--------------------------------------------------------------------
 %% @public
@@ -265,7 +268,11 @@ validate(Context, UserId, ?QUICKCALL_PATH_TOKEN, _) ->
         'true' -> Context1;
         'false' ->
             cb_modules_util:maybe_originate_quickcall(Context1)
-    end.
+    end;
+
+validate(Context, UserId, ?IVRCALL_PATH_TOKEN, _) ->
+    cb_modules_util:maybe_originate_ivrcall(Context).
+
 
 -spec validate_users(cb_context:context(), http_method()) -> cb_context:context().
 validate_users(Context, ?HTTP_GET) ->

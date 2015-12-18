@@ -90,7 +90,7 @@
                                ,{<<"Dial-Endpoint-Method">>, [<<"single">>, <<"simultaneous">>]}
                                ,{<<"Media">>, [<<"process">>, <<"bypass">>, <<"auto">>]}
                                ,{<<"Application-Name">>, [<<"park">>, <<"bridge">>, <<"transfer">>
-                                                          ,<<"fax">>, <<"eavesdrop">>
+                                                          ,<<"fax">>, <<"eavesdrop">>, <<"ivrcall">>
                                                          ]}
                                %% Eavesdrop
                                ,?EAVESDROP_MODE
